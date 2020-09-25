@@ -133,11 +133,17 @@ enum
   PROP_LAST
 };
 
-/* class initialization */
 #define gst_aml_vsink_parent_class parent_class
+#if GST_CHECK_VERSION(1,14,0)
+G_DEFINE_TYPE_WITH_CODE (GstAmlVsink, gst_aml_vsink, GST_TYPE_BASE_SINK,
+  GST_DEBUG_CATEGORY_INIT (gst_aml_vsink_debug, "amlvsink", 0,
+  "debug category for amlvsink element");G_ADD_PRIVATE(GstAmlVsink));
+#else
+/* class initialization */
 G_DEFINE_TYPE_WITH_CODE (GstAmlVsink, gst_aml_vsink, GST_TYPE_BASE_SINK,
   GST_DEBUG_CATEGORY_INIT (gst_aml_vsink_debug, "amlvsink", 0,
   "debug category for amlvsink element"));
+#endif
 
 enum
 {
@@ -185,7 +191,11 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
   gstbasesink_class = (GstBaseSinkClass *) klass;
 
   check_vdec (klass);
+
+#if GST_CHECK_VERSION(1,14,0)
+#else
   g_type_class_add_private (klass, sizeof (GstAmlVsinkPrivate));
+#endif
 
   gst_element_class_set_static_metadata (GST_ELEMENT_CLASS(klass),
       "Amlogic Video sink", "Codec/Decoder/Video/Sink/Video",
@@ -359,7 +369,11 @@ static void
 gst_aml_vsink_init (GstAmlVsink* sink)
 {
   GstBaseSink *basesink;
+#if GST_CHECK_VERSION(1,14,0)
+  GstAmlVsinkPrivate *priv = gst_aml_vsink_get_instance_private (sink);
+#else
   GstAmlVsinkPrivate *priv = GST_AML_VSINK_GET_PRIVATE (sink);
+#endif
 
   sink->priv = priv;
   basesink = GST_BASE_SINK_CAST (sink);
