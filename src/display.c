@@ -32,13 +32,15 @@
 #include "aml_avsync.h"
 #include "aml_avsync_log.h"
 #include "display.h"
+
+GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
+#define GST_CAT_DEFAULT gst_aml_vsink_debug
+
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define MAX_BUF_SIZE 32
 
 static char* drm_master_dev_name = "/dev/dri/card0";
 static char* drm_cli_dev_name = "/dev/dri/renderD128";
-extern char mode_str[16];
-extern unsigned int vfresh;
 
 struct gem_buffer {
   uint32_t width;
@@ -545,22 +547,21 @@ static int init_drm(struct video_disp *disp)
 
   disp->setup.connector_id = connector->connector_id;
 
+#if 0
   /* find preferred mode or the highest resolution mode: */
-
   if (*mode_str) {
     for (i = 0; i < connector->count_modes; i++) {
       drmModeModeInfo *current_mode = &connector->modes[i];
 
       if (current_mode->name && strcmp(current_mode->name, mode_str) == 0) {
-        if (vfresh == 0 || current_mode->vrefresh == vfresh) {
-          curr_mode = current_mode;
-          printf("found the request mode: %s-%d.\n", current_mode->name,
-              current_mode->vrefresh);
-          break;
-        }
+        curr_mode = current_mode;
+        printf("found the request mode: %s-%d.\n", current_mode->name,
+            current_mode->vrefresh);
+        break;
       }
     }
   }
+#endif
 
   if (!curr_mode) {
     printf("requested mode not found, using default mode!\n");

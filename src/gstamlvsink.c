@@ -37,11 +37,8 @@
 #include "v4l-dec.h"
 #include "display.h"
 
-GST_DEBUG_CATEGORY_STATIC (gst_aml_vsink_debug);
+GST_DEBUG_CATEGORY (gst_aml_vsink_debug);
 #define GST_CAT_DEFAULT gst_aml_vsink_debug
-
-#define GST_AML_VSINK_GET_PRIVATE(obj)  \
-   (G_TYPE_INSTANCE_GET_PRIVATE ((obj), GST_TYPE_AML_VSINK, GstAmlVsinkPrivate))
 
 #define PTS_90K 90000
 
@@ -139,6 +136,9 @@ G_DEFINE_TYPE_WITH_CODE (GstAmlVsink, gst_aml_vsink, GST_TYPE_BASE_SINK,
   GST_DEBUG_CATEGORY_INIT (gst_aml_vsink_debug, "amlvsink", 0,
   "debug category for amlvsink element");G_ADD_PRIVATE(GstAmlVsink));
 #else
+#define GST_AML_VSINK_GET_PRIVATE(obj)  \
+   (G_TYPE_INSTANCE_GET_PRIVATE ((obj), GST_TYPE_AML_VSINK, GstAmlVsinkPrivate))
+
 /* class initialization */
 G_DEFINE_TYPE_WITH_CODE (GstAmlVsink, gst_aml_vsink, GST_TYPE_BASE_SINK,
   GST_DEBUG_CATEGORY_INIT (gst_aml_vsink_debug, "amlvsink", 0,
@@ -1340,7 +1340,7 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
 
   fd = v4l_dec_open();
   if (fd < 0) {
-    GST_ERROR("dec ope fail");
+    GST_ERROR("dec open fail");
     goto error;
   }
 

@@ -18,7 +18,7 @@ libgstamlvsink_la_SOURCES = gstamlvsink.c display.c v4l-dec.c
 # compiler and linker flags used to compile this plugin, set in configure.ac
 libgstamlvsink_la_CFLAGS = $(GST_CFLAGS) $(DRM_CFLAGS)
 libgstamlvsink_la_LIBADD = $(GST_LIBS)
-libgstamlvsink_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS) $(DRM_CFLAGS)
+libgstamlvsink_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS) $(DRM_LIBS)
 libgstamlvsink_la_LIBADD += -L$(TARGET_DIR)/usr/lib -lamlavsync
 libgstamlvsink_la_LIBTOOLFLAGS = --tag=disable-static
 

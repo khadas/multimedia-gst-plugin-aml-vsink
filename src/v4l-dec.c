@@ -19,6 +19,9 @@
 #include "v4l-dec.h"
 #include "aml_driver.h"
 
+GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
+#define GST_CAT_DEFAULT gst_aml_vsink_debug
+
 #define MIN_OUTPUT_BUFFERS (1)
 #define MIN_CAPTURE_BUFFERS (3)
 #define OUTPUT_BUFFER_SIZE (0x400000)
@@ -72,7 +75,6 @@ int v4l_dec_open()
 error:
   if (fd >= 0 )
     close( fd );
-
 
   return -1;
 }
