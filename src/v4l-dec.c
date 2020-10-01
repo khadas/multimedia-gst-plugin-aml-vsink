@@ -153,7 +153,7 @@ struct v4l2_fmtdesc* v4l_get_capture_port_formats(int fd, uint32_t *num)
       }
    }
 
-   formats = (struct v4l2_fmtdesc*)g_malloc0_n(fnum, sizeof(*formats));
+   formats = (struct v4l2_fmtdesc*)calloc (fnum, sizeof(*formats));
    if (!formats) {
       GST_ERROR("oom");
       goto exit;
@@ -162,9 +162,9 @@ struct v4l2_fmtdesc* v4l_get_capture_port_formats(int fd, uint32_t *num)
    for (i = 0; i < fnum; ++i) {
       formats[i].index = i;
       formats[i].type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-      rc= ioctl(fd, VIDIOC_ENUM_FMT, formats[i]);
+      rc= ioctl(fd, VIDIOC_ENUM_FMT, &formats[i]);
       if (rc) {
-        GST_ERROR("VIDIOC_ENUM_FMT index %d fail", i);
+        GST_ERROR("VIDIOC_ENUM_FMT index %d fail errno %d", i, errno);
         goto exit;
       }
       GST_DEBUG("capture format %d: flags %08x pixelFormat: %x desc: %s",
@@ -188,14 +188,14 @@ int v4l_reg_event(int fd)
   evtsub.type = V4L2_EVENT_SOURCE_CHANGE;
 
   rc = ioctl (fd, VIDIOC_SUBSCRIBE_EVENT, &evtsub );
-  if (!rc)
+  if (rc)
     GST_ERROR("event subscribe failed rc %d (errno %d)", rc, errno);
 
   memset(&evtsub, 0, sizeof(evtsub));
   evtsub.type = V4L2_EVENT_EOS;
 
   rc = ioctl (fd, VIDIOC_SUBSCRIBE_EVENT, &evtsub );
-  if (!rc)
+  if (rc)
     GST_ERROR("event subscribe failed rc %d (errno %d)", rc, errno);
 
   return rc;
@@ -250,7 +250,8 @@ struct output_buffer** v4l_setup_output_port (int fd, uint32_t mode, uint32_t *b
 	}
 
   cnt = reqbuf.count;
-  ob = (struct output_buffer **) calloc (cnt, sizeof(*ob));
+  GST_DEBUG ("output port requires %d buffers", cnt);
+  ob = (struct output_buffer **) calloc (cnt, sizeof(struct output_buffer *));
   if (!ob) {
     GST_ERROR ("oom");
     goto error;
@@ -269,8 +270,6 @@ struct output_buffer** v4l_setup_output_port (int fd, uint32_t mode, uint32_t *b
 		buf->type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
 		buf->index = i;
 		buf->memory = mode;
-
-    memset (&ob[i]->plane, 0, sizeof(struct v4l2_plane)*2);
     buf->m.planes = &ob[i]->plane;
     buf->length = 1;
 
@@ -413,13 +412,15 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
     goto exit;
   }
 
-  cb = (struct capture_buffer **)calloc (cnt, sizeof(*cb));
+  GST_DEBUG ("capture port requires %d buffers", reqbuf.count);
+  cb = (struct capture_buffer **)calloc (reqbuf.count, sizeof(struct capture_buffer *));
   if (!cb) {
     GST_ERROR ("oom");
     goto exit;
   }
 
   for (i = 0 ; i < reqbuf.count ; ++i) {
+    struct v4l2_buffer *buf;
     int fds[4] = {0};
 
     cb[i] = (struct capture_buffer *) calloc (1, sizeof (struct capture_buffer));
@@ -437,7 +438,14 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
       goto exit;
     }
 
-    rc = ioctl (fd, VIDIOC_QUERYBUF, &cb[i]->buf);
+    buf = &cb[i]->buf;
+    buf->index = i;
+    buf->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    buf->memory = V4L2_MEMORY_DMABUF;
+    buf->length = 2;
+    buf->m.planes = cb[i]->plane;
+
+    rc = ioctl (fd, VIDIOC_QUERYBUF, buf);
     if (rc) {
       GST_ERROR ("VIDIOC_QUERYBUF %d cap buf fail errno %d", i, errno);
       goto exit;
@@ -454,7 +462,7 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
       cb[i]->gem_fd[j] = fds[j];
     }
 
-    rc = ioctl (fd, VIDIOC_QBUF, &cb[i]->buf);
+    rc = ioctl (fd, VIDIOC_QBUF, buf);
     if (rc) {
       GST_ERROR("VIDIOC_QBUF cap %d error", i);
       goto exit;
@@ -664,22 +672,23 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   return rc;
 }
 
-int v4l_set_output_format(int fd, uint32_t fmt, uint32_t w, uint32_t h)
+int v4l_set_output_format(int fd, uint32_t format, uint32_t w, uint32_t h)
 {
   int rc;
-  struct v4l2_format fmtIn;
+  struct v4l2_format fmt;
 
-  memset (&fmtIn, 0, sizeof(struct v4l2_format));
-  fmtIn.fmt.pix_mp.pixelformat = fmt;
-  fmtIn.fmt.pix_mp.width = w;
-  fmtIn.fmt.pix_mp.height = h;
-  fmtIn.fmt.pix_mp.num_planes= 1;
-  fmtIn.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE;
-  fmtIn.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
-  fmtIn.fmt.pix_mp.field = V4L2_FIELD_NONE;
-  rc = ioctl (fd, VIDIOC_S_FMT, &fmtIn);
+  memset (&fmt, 0, sizeof(struct v4l2_format));
+  fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+  fmt.fmt.pix_mp.pixelformat = format;
+  fmt.fmt.pix_mp.width = w;
+  fmt.fmt.pix_mp.height = h;
+  fmt.fmt.pix_mp.num_planes= 1;
+  fmt.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE;
+  fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
+  fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
+  rc = ioctl (fd, VIDIOC_S_FMT, &fmt);
   if (rc)
-    GST_DEBUG("failed to set format for output: rc %d errno %d", rc, errno);
+    GST_ERROR ("failed to set format for output: rc %d errno %d", rc, errno);
 
   return rc;
 }
@@ -714,7 +723,7 @@ int v4l_set_secure_mode(int fd, uint32_t w, uint32_t h, bool secure)
   queryctrl.id= AML_V4L2_SET_DRMMODE;
 
   rc = ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl );
-  if (!rc) {
+  if (rc) {
     GST_ERROR("VIDIOC_QUERYCTRL fails");
     return rc;
   }
@@ -725,7 +734,7 @@ int v4l_set_secure_mode(int fd, uint32_t w, uint32_t h, bool secure)
 
 #define CODEC_MM_TVP "/sys/class/codec_mm/tvp_enable"
   if (secure) {
-    g_print("secure video\n");
+    GST_WARNING ("secure video\n");
     if ( w > 1920 || h > 1080)
       config_sys_node(CODEC_MM_TVP, "2");
     else if (w == 0 || h == 0)
@@ -733,7 +742,7 @@ int v4l_set_secure_mode(int fd, uint32_t w, uint32_t h, bool secure)
     else
       config_sys_node(CODEC_MM_TVP, "1");
   } else {
-    g_print("non-secure video\n");
+    GST_WARNING ("non-secure video\n");
     config_sys_node(CODEC_MM_TVP, "0");
   }
 

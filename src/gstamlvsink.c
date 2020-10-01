@@ -42,10 +42,6 @@ GST_DEBUG_CATEGORY (gst_aml_vsink_debug);
 
 #define PTS_90K 90000
 
-#ifdef DUMP_TO_FILE
-static guint file_index;
-#endif
-
 struct _GstAmlVsinkPrivate
 {
   gboolean paused;
@@ -177,7 +173,11 @@ static gboolean check_vdec(GstAmlVsinkClass *klass);
 int capture_buffer_recycle(void* priv_data, void* handle);
 //static int get_sysfs_uint32(const char *path, uint32_t *value);
 //static int config_sys_node(const char* path, const char* value);
-//static void dump(const char* path, const uint8_t *data, int size);
+#define DUMP_TO_FILE
+#ifdef DUMP_TO_FILE
+static guint file_index;
+static void dump(const char* path, const uint8_t *data, int size, gboolean vp9, int frame_cnt);
+#endif
 
 static void
 gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
@@ -248,8 +248,8 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
 static gboolean build_caps(GstAmlVsinkClass*klass, struct v4l2_fmtdesc *formats, uint32_t fnum)
 {
   gboolean ret = FALSE;
-  GstCaps *caps= 0;
-  GstCaps *tmp= 0;
+  GstCaps *caps = 0;
+  GstCaps *tmp = 0;
   GstPadTemplate *padTemplate= 0;
   int i;
 
@@ -341,6 +341,7 @@ static gboolean check_vdec(GstAmlVsinkClass *klass)
   uint32_t fnum;
   struct v4l2_fmtdesc *formats = NULL;
 
+  GST_TRACE ("open vdec");
   fd = v4l_dec_open();
   if (fd < 0) {
     GST_ERROR("dec ope fail");
@@ -348,12 +349,18 @@ static gboolean check_vdec(GstAmlVsinkClass *klass)
   }
 
   formats = v4l_get_output_port_formats (fd, &fnum);
-  if (!formats)
+  if (!formats) {
+    GST_ERROR ("can not get formats");
     goto error;
+  }
 
-  if (!build_caps (klass, formats, fnum))
+  if (!build_caps (klass, formats, fnum)) {
+    GST_ERROR ("can not build caps");
     goto error;
+  }
 
+  GST_TRACE ("done");
+  close (fd);
   ret = TRUE;
 error:
   if (fd >= 0 )
@@ -378,13 +385,14 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   sink->priv = priv;
   basesink = GST_BASE_SINK_CAST (sink);
   /* bypass sync control of basesink */
-  gst_base_sink_set_sync(basesink, FALSE);
+  gst_base_sink_set_sync (basesink, FALSE);
   gst_pad_set_event_function (basesink->sinkpad, gst_aml_vsink_pad_event);
   gst_pad_set_chain_function (basesink->sinkpad, gst_aml_vsink_chain);
 
-  pthread_mutex_init(&priv->res_lock, NULL);
+  pthread_mutex_init (&priv->res_lock, NULL);
   priv->received_eos = FALSE;
   priv->group_id = -1;
+  priv->fd = -1;
 }
 
 static void
@@ -393,7 +401,7 @@ gst_aml_vsink_dispose (GObject * object)
   GstAmlVsink* sink = GST_AML_VSINK(object);
   GstAmlVsinkPrivate *priv = sink->priv;
 
-  pthread_mutex_destroy(&priv->res_lock);
+  pthread_mutex_destroy (&priv->res_lock);
   G_OBJECT_CLASS (parent_class)->dispose (object);
 }
 
@@ -409,7 +417,7 @@ gst_aml_vsink_query (GstElement * element, GstQuery * query)
   switch (GST_QUERY_TYPE (query)) {
     case GST_QUERY_LATENCY:
     {
-      gst_query_set_latency(query, FALSE, 0, 10*1000*1000);
+      gst_query_set_latency (query, FALSE, 0, 10*1000*1000);
       return TRUE;
     }
     case GST_QUERY_POSITION:
@@ -418,10 +426,10 @@ gst_aml_vsink_query (GstElement * element, GstQuery * query)
       gst_query_parse_position (query, &format, NULL);
 
       if (GST_FORMAT_BYTES == format)
-        return GST_ELEMENT_CLASS(parent_class)->query (element, query);
+        return GST_ELEMENT_CLASS (parent_class)->query (element, query);
 
       GST_LOG_OBJECT(sink, "POSITION: %lld", priv->position);
-      gst_query_set_position(query, GST_FORMAT_TIME, priv->position);
+      gst_query_set_position (query, GST_FORMAT_TIME, priv->position);
       break;
     }
     default:
@@ -465,17 +473,18 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
   }
   case PROP_WINDOW_SET:
   {
-    const gchar *str= g_value_get_string(value);
-    gchar **parts= g_strsplit(str, ",", 4);
+    const gchar *str = g_value_get_string (value);
+    gchar **parts = g_strsplit (str, ",", 4);
 
     if ( !parts[0] || !parts[1] || !parts[2] || !parts[3] ) {
       GST_ERROR( "Bad window properties string" );
     } else {
       int nx, ny, nw, nh;
-      nx= atoi( parts[0] );
-      ny= atoi( parts[1] );
-      nw= atoi( parts[2] );
-      nh= atoi( parts[3] );
+
+      nx = atoi(parts[0]);
+      ny = atoi(parts[1]);
+      nw = atoi(parts[2]);
+      nh = atoi(parts[3]);
 
       if ( (!priv->scale_set) ||
           (nx != priv->window.x) ||
@@ -535,32 +544,32 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
     return TRUE;
   }
 
-  gchar *str= gst_caps_to_string(caps);
+  gchar *str= gst_caps_to_string (caps);
   GST_INFO ("caps: %s", str);
   g_free(str);
 
-  structure= gst_caps_get_structure(caps, 0);
+  structure= gst_caps_get_structure (caps, 0);
   if (!structure)
     return FALSE;
 
-  mime= gst_structure_get_name(structure);
+  mime= gst_structure_get_name (structure);
   if (!mime)
     return FALSE;
 
   /* format */
   priv->output_format = -1;
   len= strlen(mime);
-  if (len == 12 && !strncmp("video/x-h264", mime, len))
+  if (len == 12 && !strncmp ("video/x-h264", mime, len))
     priv->output_format = V4L2_PIX_FMT_H264;
-  else if (len == 10 && !strncmp("video/mpeg", mime, len)) {
+  else if (len == 10 && !strncmp ("video/mpeg", mime, len)) {
     int version;
 
-    if (gst_structure_get_int(structure, "mpegversion", &version)
+    if (gst_structure_get_int (structure, "mpegversion", &version)
       && version == 2)
       priv->output_format = V4L2_PIX_FMT_MPEG2;
-  } else if (len == 12 && !strncmp("video/x-h265", mime, len))
+  } else if (len == 12 && !strncmp ("video/x-h265", mime, len))
     priv->output_format = V4L2_PIX_FMT_HEVC;
-  else if (len == 11 && !strncmp("video/x-vp9", mime, len))
+  else if (len == 11 && !strncmp ("video/x-vp9", mime, len))
     priv->output_format = V4L2_PIX_FMT_VP9;
 
   if (priv->output_format == -1) {
@@ -569,7 +578,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   }
 
   /* frame rate */
-	if (gst_structure_get_fraction( structure, "framerate", &num, &denom)) {
+	if (gst_structure_get_fraction (structure, "framerate", &num, &denom)) {
 		if ( denom == 0 )
       denom= 1;
 
@@ -581,9 +590,9 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 	}
 
   /* dimension */
-	if (gst_structure_get_int( structure, "width", &width ))
+	if (gst_structure_get_int (structure, "width", &width ))
     priv->es_width = width;
-	if (gst_structure_get_int( structure, "height", &height))
+	if (gst_structure_get_int (structure, "height", &height))
     priv->es_height = width;
 
   /* setup double write mode */
@@ -611,7 +620,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 
   /* HDR */
 	if (gst_structure_has_field(structure, "colorimetry")) {
-		const char *colorimetry= gst_structure_get_string(structure,"colorimetry");
+		const char *colorimetry = gst_structure_get_string (structure,"colorimetry");
 
 		if (colorimetry &&
 				sscanf( colorimetry, "%d:%d:%d:%d",
@@ -629,7 +638,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 	}
 
 	if (gst_structure_has_field(structure, "mastering-display-metadata")) {
-		const char *masteringDisplay= gst_structure_get_string(structure,"mastering-display-metadata");
+		const char *masteringDisplay = gst_structure_get_string (structure,"mastering-display-metadata");
 
 		if (masteringDisplay &&
 				sscanf( masteringDisplay, "%f:%f:%f:%f:%f:%f:%f:%f:%f:%f",
@@ -659,7 +668,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 	}
 
 	if (gst_structure_has_field(structure, "content-light-level")) {
-		const char *contentLightLevel= gst_structure_get_string(structure,"content-light-level");
+		const char *contentLightLevel = gst_structure_get_string (structure,"content-light-level");
 
 		if (contentLightLevel &&
 				sscanf(contentLightLevel, "%d:%d",
@@ -797,7 +806,8 @@ gst_aml_vsink_pad_event (GstPad * pad, GstObject * parent, GstEvent * event)
   GstAmlVsinkPrivate *priv = sink->priv;
   gboolean result = TRUE;
 
-  GST_DEBUG_OBJECT (sink, "received event %p %" GST_PTR_FORMAT, event, event);
+  if (GST_EVENT_TYPE (event) != GST_EVENT_TAG)
+    GST_DEBUG_OBJECT (sink, "received event %p %" GST_PTR_FORMAT, event, event);
 
   if (GST_EVENT_IS_SERIALIZED (event)) {
     if (G_UNLIKELY (priv->flushing_) &&
@@ -810,7 +820,6 @@ gst_aml_vsink_pad_event (GstPad * pad, GstObject * parent, GstEvent * event)
 
   result = gst_aml_vsink_event (sink, event);
 done:
-  GST_DEBUG_OBJECT (sink, "done");
   return result;
 
   /* ERRORS */
@@ -875,9 +884,9 @@ static void handle_v4l_event (GstAmlVsink *sink)
       priv->coded_w = fmtOut.fmt.pix_mp.width;
       priv->coded_h = fmtOut.fmt.pix_mp.height;
 
-      pthread_mutex_lock(&priv->res_lock);
+      pthread_mutex_lock (&priv->res_lock);
       recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
-      pthread_mutex_unlock(&priv->res_lock);
+      pthread_mutex_unlock (&priv->res_lock);
 
       if (v4l_dec_config(priv->fd, priv->secure,
             priv->output_format, priv->dw_mode,
@@ -995,7 +1004,7 @@ static gpointer video_decode_thread(gpointer data)
     for (;;) {
       int ret;
 
-      ret = poll(&pfd, 1, 10);
+      ret = poll (&pfd, 1, 10);
       if (ret > 0)
         break;
       if (priv->quitVideoOutputThread)
@@ -1050,13 +1059,13 @@ static gpointer video_decode_thread(gpointer data)
 exit:
     /* stop output port */
     type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    rc = ioctl(priv->fd, VIDIOC_STREAMOFF, &type);
+    rc = ioctl (priv->fd, VIDIOC_STREAMOFF, &type);
     if (rc)
         GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",rc);
 
     /* stop capture port */
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    rc = ioctl(priv->fd, VIDIOC_STREAMOFF, &type);
+    rc = ioctl (priv->fd, VIDIOC_STREAMOFF, &type);
     if (rc)
         GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",rc);
 
@@ -1072,8 +1081,8 @@ static int start_video_thread (GstAmlVsink * sink)
 
   priv->quitVideoOutputThread = FALSE;
   if (!priv->videoOutputThread) {
-    GST_DEBUG_OBJECT(sink, "starting video thread");
-    priv->videoOutputThread= g_thread_new("video output thread", video_decode_thread, sink);
+    GST_DEBUG_OBJECT (sink, "starting video thread");
+    priv->videoOutputThread = g_thread_new ("video output thread", video_decode_thread, sink);
   }
 
   priv->output_start = TRUE;
@@ -1123,9 +1132,9 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
   int rc;
   struct output_buffer *ob;
 
-  mem = gst_buffer_peek_memory(buf, 0);
+  mem = gst_buffer_peek_memory (buf, 0);
   if (!priv->output_port_config) {
-    if (gst_is_dmabuf_memory(mem))
+    if (gst_is_dmabuf_memory (mem))
       priv->output_mode = V4L2_MEMORY_DMABUF;
     else
       priv->output_mode = V4L2_MEMORY_MMAP;
@@ -1155,7 +1164,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
 
   if (GST_BUFFER_PTS_IS_VALID(buf)) {
     if (!priv->first_ts_set) {
-      priv->first_ts = GST_BUFFER_PTS(buf);
+      priv->first_ts = GST_BUFFER_PTS (buf);
       priv->first_ts_set = true;
     }
   }
@@ -1175,8 +1184,8 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       ob->gstbuf = NULL;
     }
 
-    if (GST_BUFFER_PTS_IS_VALID(buf))
-      GST_TIME_TO_TIMEVAL(GST_BUFFER_PTS(buf), ob->buf.timestamp);
+    if (GST_BUFFER_PTS_IS_VALID (buf))
+      GST_TIME_TO_TIMEVAL (GST_BUFFER_PTS(buf), ob->buf.timestamp);
 
     inSize= gst_memory_get_sizes( mem, &dataOffset, &maxSize );
 
@@ -1197,17 +1206,15 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     GstMapInfo map;
     guint8 * inData;
 
-    gst_buffer_map(buf, &map, (GstMapFlags)GST_MAP_READ);
+    gst_buffer_map (buf, &map, (GstMapFlags)GST_MAP_READ);
     inSize = map.size;
     inData = map.data;
-
-    GST_LOG("buffer %p, len %d timestamp: %lld", buf, inSize, GST_BUFFER_PTS(buf));
 
     if (inSize) {
       gsize copylen;
 
       if ( priv->flushing_) {
-        GST_WARNING_OBJECT(sink, "drop frame in flushing");
+        GST_WARNING_OBJECT (sink, "drop frame in flushing");
         goto exit;
       }
 
@@ -1215,21 +1222,28 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       if (copylen >= inSize)
         copylen = inSize;
       else
-        GST_WARNING_OBJECT(sink, "sample too big %d vs %d", copylen, inSize);
+        GST_WARNING_OBJECT (sink, "sample too big %d vs %d", copylen, inSize);
 
-      memcpy(ob->vaddr, inData, copylen);
+      memcpy (ob->vaddr, inData, copylen);
 
       if (GST_BUFFER_PTS_IS_VALID(buf))
         GST_TIME_TO_TIMEVAL(GST_BUFFER_PTS(buf), ob->buf.timestamp);
 
       ob->buf.bytesused = copylen;
-      ob->buf.m.planes[0].bytesused= copylen;
+      ob->buf.m.planes[0].bytesused = copylen;
       rc = ioctl (priv->fd, VIDIOC_QBUF, &ob->buf);
       if (rc) {
         GST_ERROR("queuing output buffer failed: rc %d errno %d", rc, errno);
         goto exit;
       }
-      ob->queued= true;
+      ob->queued = true;
+      GST_DEBUG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copylen, GST_BUFFER_PTS(buf));
+#ifdef DUMP_TO_FILE
+      if (getenv("AML_VSINK_ES_DUMP"))
+        dump ("/data/amlvsink", inData, copylen,
+            priv->output_format == V4L2_PIX_FMT_VP9,
+            priv->in_frame_cnt == 0);
+#endif
     }
     gst_buffer_unmap (buf, &map);
   }
@@ -1246,7 +1260,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       return GST_FLOW_ERROR;
     }
 
-    if (v4l_dec_config(priv->fd, priv->secure,
+    if (v4l_dec_config (priv->fd, priv->secure,
           priv->output_format, priv->dw_mode, &priv->hdr)) {
       GST_ERROR("v4l_dec_config failed");
       return GST_FLOW_ERROR;
@@ -1260,7 +1274,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       return GST_FLOW_ERROR;
     }
 
-    if (start_video_thread(sink)) {
+    if (start_video_thread (sink)) {
       GST_ERROR("start_video_thread failed");
       return GST_FLOW_ERROR;
     }
@@ -1353,16 +1367,23 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
 
   /* capture port formats */
   formats = v4l_get_capture_port_formats (fd, &fnum);
-  if (!formats)
+  if (!formats) {
+    GST_ERROR("get capture format fail");
     goto error;
+  }
 
   priv->capture_formats = formats;
 
   rc = v4l_reg_event(fd);
-  if (rc)
+  if (rc) {
+    GST_ERROR("reg event fail");
     goto error;
+  }
 
   priv->fd = fd;
+#ifdef DUMP_TO_FILE
+  file_index++;
+#endif
 
   /* render init */
   priv->render = display_engine_start(priv);
@@ -1422,6 +1443,11 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
   v4l_unreg_event (priv->fd);
 
   reset_decoder (sink);
+
+  if (priv->fd > 0) {
+    close (priv->fd);
+    priv->fd = -1;
+  }
   vsink_reset (sink);
   return GST_STATE_CHANGE_SUCCESS;
 }
@@ -1497,7 +1523,7 @@ int capture_buffer_recycle(void* priv_data, void* handle)
   if (!frame->drm_frame->displayed)
     priv->dropped_frame_num++;
 
-  pthread_mutex_lock(&priv->res_lock);
+  pthread_mutex_lock (&priv->res_lock);
   if (frame->free_on_recycle) {
     GST_DEBUG ("free index:%d\n", frame->buf.index);
     frame->drm_frame->destroy(frame->drm_frame);
@@ -1514,7 +1540,7 @@ int capture_buffer_recycle(void* priv_data, void* handle)
   }
 
 exit:
-  pthread_mutex_unlock(&priv->res_lock);
+  pthread_mutex_unlock (&priv->res_lock);
   return ret;
 }
 
@@ -1559,6 +1585,43 @@ static int config_sys_node(const char* path, const char* value)
   close(fd);
 
   return 0;
+}
+#endif
+
+#ifdef DUMP_TO_FILE
+static uint8_t ivf_header[32] = {
+  'D', 'K', 'I', 'F',
+  0x00, 0x00, 0x20, 0x00,
+  'V', 'P', '9', '0',
+  0x80, 0x07, 0x38, 0x04, /* 1920 x 1080 */
+  0x30, 0x76, 0x00, 0x00, /* frame rate */
+  0xe8, 0x03, 0x00, 0x00, /* time scale */
+  0x00, 0x00, 0xff, 0xff, /* # of frames */
+  0x00, 0x00, 0x00, 0x00  /* unused */
+};
+
+static void dump(const char* path, const uint8_t *data, int size, gboolean vp9, int frame_cnt)
+{
+  char name[50];
+  uint8_t frame_header[12] = {0};
+  FILE* fd;
+
+  sprintf(name, "%s%d.dat", path, file_index);
+  fd = fopen(name, "ab");
+
+  if (!fd)
+    return;
+  if (vp9) {
+    if (!frame_cnt)
+      fwrite(ivf_header, 1, 32, fd);
+    frame_header[0] = size & 0xff;
+    frame_header[1] = (size >> 8) & 0xff;
+    frame_header[2] = (size >> 16) & 0xff;
+    frame_header[3] = (size >> 24) & 0xff;
+    fwrite(frame_header, 1, 12, fd);
+  }
+  fwrite(data, 1, size, fd);
+  fclose(fd);
 }
 #endif
 
