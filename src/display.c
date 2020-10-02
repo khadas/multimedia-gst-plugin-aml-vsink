@@ -20,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/prctl.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -105,6 +106,7 @@ struct video_disp {
   bool last_frame;
   int drm_mode_set;
   void *priv;
+  pthread_mutex_t avsync_lock;
 };
 
 struct plane {
@@ -778,6 +780,7 @@ void *display_engine_start(void* priv)
     goto error;
   }
   disp->priv = priv;
+  pthread_mutex_init (&disp->avsync_lock, NULL);
 
   /* avsync log level */
   log_set_level(LOG_INFO);
@@ -787,17 +790,29 @@ error:
   return NULL;
 }
 
-//TODO
-int display_set_avsync_mode(void *handle, enum sync_mode mode)
+int display_start_avsync(void *handle, enum sync_mode mode)
 {
   struct video_disp * disp = handle;
 
-  disp->avsync = av_sync_create(0, AV_SYNC_MODE_VMASTER, 2, 2, 90000/disp->setup.mode.vrefresh);
+  log_set_level (LOG_INFO);
+  disp->avsync = av_sync_create(0, mode, 2, 2, 90000/disp->setup.mode.vrefresh);
   if (!disp->avsync) {
-    printf("create avsync fails\n");
+    GST_ERROR ("create avsync fails\n");
     return -1;
   }
   return 0;
+}
+
+void display_stop_avsync(void *handle)
+{
+  struct video_disp * disp = handle;
+
+  pthread_mutex_lock (&disp->avsync_lock);
+  if (disp->avsync) {
+    av_sync_destroy (disp->avsync);
+    disp->avsync = NULL;
+  }
+  pthread_mutex_unlock (&disp->avsync_lock);
 }
 
 static int frame_destroy(struct drm_frame* drm_f)
@@ -878,10 +893,13 @@ int display_get_buffer_fds(struct drm_frame* drm_f, int *fd, int cnt)
 void display_engine_stop(void *handle)
 {
   struct video_disp* disp = handle;
+  int rc;
 
   disp->started = false;
-  pthread_join (disp->disp_t, NULL);
-  close_buffer (disp->drm_cli_fd, &disp->osd_gem_buf);
+  rc = pthread_join (disp->disp_t, NULL);
+  if (rc)
+    GST_ERROR ("join display thread %d", errno);
+
   if (disp->avsync)
     av_sync_destroy (disp->avsync);
 
@@ -889,6 +907,7 @@ void display_engine_stop(void *handle)
   if (disp->queue)
     free(disp->queue);
 #endif
+  close_buffer (disp->drm_cli_fd, &disp->osd_gem_buf);
   if (gem_buf)
     free (gem_buf);
   if (disp->setup.plane) {
@@ -910,6 +929,7 @@ void display_engine_stop(void *handle)
     drmClose (disp->drm_fd);
   if (disp->drm_cli_fd >= 0)
     drmClose (disp->drm_cli_fd);
+  pthread_mutex_destroy (&disp->avsync_lock);
 
   free (disp);
 }
@@ -917,15 +937,16 @@ void display_engine_stop(void *handle)
 static void * display_thread_func(void * arg)
 {
   struct video_disp *disp = arg;
-  struct vframe *sync_frame;
   struct drm_frame *f = NULL, *f_p1 = NULL, *f_p2 = NULL, *f_p3 = NULL;
   drmVBlank vbl;
 
+  prctl (PR_SET_NAME, "aml_v_dis");
   memset(&vbl, 0, sizeof(drmVBlank));
 
   while (disp->started) {
     int rc;
     struct gem_buffer* gem_buf;
+    struct vframe *sync_frame = NULL;
 
     vbl.request.type = DRM_VBLANK_RELATIVE;
     vbl.request.sequence = 1;
@@ -937,7 +958,10 @@ static void * display_thread_func(void * arg)
       return NULL;
     }
 
-    sync_frame = av_sync_pop_frame(disp->avsync);
+    pthread_mutex_lock (&disp->avsync_lock);
+    if (disp->avsync)
+      sync_frame = av_sync_pop_frame(disp->avsync);
+    pthread_mutex_unlock (&disp->avsync_lock);
     if (!sync_frame)
       continue;
 
@@ -948,9 +972,10 @@ static void * display_thread_func(void * arg)
       break;
     }
 
-    GST_DEBUG ("pop frame: %u", f->pts);
     if (f != f_p1) {
+      GST_DEBUG ("pop frame: %u", f->pts);
       gem_buf = f->gem;
+      //TODO set sync_frame->window
       rc = page_flip(disp, gem_buf);
       if (rc) {
         GST_ERROR ("page_flip error\n");
@@ -976,10 +1001,14 @@ static void sync_frame_free(struct vframe * sync_frame)
   struct drm_frame* drm_f = sync_frame->private;
   struct video_disp *disp = drm_f->pri_drm;
 
+  if (!disp) {
+    GST_ERROR ("invalid arg");
+    return;
+  }
+
   if (drm_f) {
     drm_f->displayed = false;
     display_cb(disp->priv, drm_f->pri_dec);
-    free(sync_frame);
   } else
     disp->last_frame = true;
 }
@@ -989,6 +1018,11 @@ int display_engine_show(void* handle, struct drm_frame* frame, struct rect* wind
   struct video_disp *disp = handle;
   int rc;
   struct vframe* sync_frame = &frame->sync_frame;
+
+  if (!disp->avsync) {
+    GST_ERROR ("avsync not started");
+    return -1;
+  }
 
   if (!disp->started) {
     disp->started = true;
@@ -1001,13 +1035,12 @@ int display_engine_show(void* handle, struct drm_frame* frame, struct rect* wind
     }
   }
 
-  if (!frame->last_flag) {
-    sync_frame->private = frame;
-    sync_frame->pts = frame->pts;
-    sync_frame->duration = frame->duration;
-    //TODO: set windows
-  }
+  sync_frame->private = frame;
+  sync_frame->pts = frame->pts;
+  sync_frame->duration = frame->duration;
   sync_frame->free = sync_frame_free;
+  frame->window = *window;
+
   while (disp->started) {
     if (av_sync_push_frame(disp->avsync, sync_frame)) {
       usleep(1000);

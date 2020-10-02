@@ -29,6 +29,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <pthread.h>
 #include <aml_avsync.h>
 #include <gst/allocators/gstdmabuf.h>
@@ -90,6 +91,8 @@ struct _GstAmlVsinkPrivate
 
   /* render */
   void *render;
+  enum sync_mode avsync_mode;
+  gboolean avsync_paused;
 
   GstCaps *caps;
 
@@ -717,13 +720,11 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
 
       priv->received_eos = TRUE;
       GST_WARNING_OBJECT (sink, "EOS received");
+      GST_OBJECT_LOCK (sink);
       /* flush decoder */
       ret = ioctl(priv->fd, VIDIOC_DECODER_CMD, &cmd);
       if (ret)
         GST_ERROR_OBJECT (sink, "V4L2_DEC_CMD_STOP output fail %d",errno);
-
-      GST_OBJECT_LOCK (sink);
-      priv->eos = TRUE;
       GST_OBJECT_UNLOCK (sink);
 
       priv->seqnum = gst_event_get_seqnum (event);
@@ -732,7 +733,7 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
     }
     case GST_EVENT_FLUSH_START:
     {
-      GST_DEBUG_OBJECT (sink, "flush start");
+      GST_INFO_OBJECT (sink, "flush start");
 
       GST_OBJECT_LOCK (sink);
       priv->received_eos = FALSE;
@@ -742,7 +743,7 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
     }
     case GST_EVENT_FLUSH_STOP:
     {
-      GST_DEBUG_OBJECT (sink, "flush stop");
+      GST_INFO_OBJECT (sink, "flush stop");
       reset_decoder (sink);
       vsink_reset (sink);
 #ifdef DUMP_TO_FILE
@@ -753,7 +754,7 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
     case GST_EVENT_SEGMENT:
     {
       gst_event_copy_segment (event, &priv->segment);
-      GST_DEBUG_OBJECT (sink, "configured segment %" GST_SEGMENT_FORMAT,
+      GST_INFO_OBJECT (sink, "configured segment %" GST_SEGMENT_FORMAT,
           &priv->segment);
 
       /* prepare for trick play */
@@ -853,7 +854,7 @@ static void handle_v4l_event (GstAmlVsink *sink)
 	rc= ioctl (priv->fd, VIDIOC_DQEVENT, &event);
   if (rc) {
     GST_ERROR ("fail VIDIOC_DQEVENT %d", errno);
-    return;
+    goto exit;
   }
 
   if ( (event.type == V4L2_EVENT_SOURCE_CHANGE) &&
@@ -878,7 +879,7 @@ static void handle_v4l_event (GstAmlVsink *sink)
       rc = ioctl (priv->fd, VIDIOC_STREAMOFF, &type);
       if (rc) {
         GST_ERROR ("cap VIDIOC_STREAMOFF error %d", errno);
-        return;
+        goto exit;
       }
 
       priv->coded_w = fmtOut.fmt.pix_mp.width;
@@ -892,7 +893,7 @@ static void handle_v4l_event (GstAmlVsink *sink)
             priv->output_format, priv->dw_mode,
             &priv->hdr)) {
         GST_ERROR("v4l_dec_config failed");
-        return;
+        goto exit;
       }
 
       priv->cb = v4l_setup_capture_port (priv->fd, &priv->cb_num,
@@ -900,14 +901,14 @@ static void handle_v4l_event (GstAmlVsink *sink)
           &priv->coded_w, &priv->coded_h, priv->secure);
       if (!priv->cb) {
         GST_ERROR ("setup capture fail");
-        return;
+        goto exit;
       }
 
       rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
       if ( rc < 0 )
       {
         GST_ERROR ("streamon failed for output: rc %d errno %d", rc, errno );
-        return;
+        goto exit;
       }
 
       memset( &selection, 0, sizeof(selection) );
@@ -924,15 +925,15 @@ static void handle_v4l_event (GstAmlVsink *sink)
   } else if (event.type == V4L2_EVENT_EOS) {
     GstMessage * message;
 
-    GST_WARNING_OBJECT (sink, "EOS received");
+    GST_WARNING_OBJECT (sink, "Posting EOS");
     priv->eos = TRUE;
 
-    GST_DEBUG_OBJECT (sink, "Now posting EOS");
     message = gst_message_new_eos (GST_OBJECT_CAST (sink));
     gst_message_set_seqnum (message, priv->seqnum);
     gst_element_post_message (GST_ELEMENT_CAST (sink), message);
   }
-	GST_OBJECT_UNLOCK (sink);
+exit:
+  GST_OBJECT_UNLOCK (sink);
 }
 
 static struct capture_buffer* dqueue_capture_buffer(GstAmlVsink * sink)
@@ -963,6 +964,56 @@ static struct capture_buffer* dqueue_capture_buffer(GstAmlVsink * sink)
   return cb;
 }
 
+/* detect the existence of amlhalasink */
+static GstElement* detect_audio_sync(GstAmlVsink * sink)
+{
+  GstElement *audioSink = NULL;
+  GstElement *pipeline = NULL;
+  GstElement *element, *elementPrev = NULL;
+
+  element = GST_ELEMENT_CAST (sink);
+  do {
+    if (elementPrev)
+      gst_object_unref(elementPrev);
+
+    element = GST_ELEMENT_CAST (gst_element_get_parent (element));
+    if (element) {
+      elementPrev = pipeline;
+      pipeline = element;
+    }
+  } while (element);
+
+  if (pipeline) {
+    GstIterator *iter = gst_bin_iterate_recurse (GST_BIN(pipeline));
+
+    if (iter) {
+      GValue val = G_VALUE_INIT;
+
+      while (gst_iterator_next (iter, &val) == GST_ITERATOR_OK) {
+        element = (GstElement*)g_value_get_object (&val);
+        if (element && !GST_IS_BIN(element)) {
+          GstElementClass *ec = GST_ELEMENT_GET_CLASS(element);
+
+          if (ec) {
+            gchar *name = gst_element_get_name (element);
+
+            if (strstr(name, "amlhalasink")) {
+              audioSink = (GstElement*)gst_object_ref (element);
+              GST_INFO ("detected audio sink: name (%s)", name);
+              g_free (name);
+              break;
+            }
+          }
+        }
+        g_value_reset (&val);
+      }
+      gst_iterator_free(iter);
+    }
+    gst_object_unref(pipeline);
+  }
+  return audioSink;
+}
+
 static gpointer video_decode_thread(gpointer data)
 {
   int rc;
@@ -971,7 +1022,8 @@ static gpointer video_decode_thread(gpointer data)
   struct v4l2_selection selection;
   uint32_t type;
 
-  GST_DEBUG("enter");
+  prctl (PR_SET_NAME, "aml_v_dec");
+  GST_INFO_OBJECT (sink, "enter");
   type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
   if ( rc < 0 )
@@ -991,6 +1043,44 @@ static gpointer video_decode_thread(gpointer data)
   priv->visible_h = selection.r.height;
   GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
 
+
+  /* av sync mode */
+  priv->avsync_mode = AV_SYNC_MODE_VMASTER;
+  {
+#if 1
+    GstElement *audioSink;
+
+    audioSink = detect_audio_sync (sink);
+    if (audioSink) {
+      priv->avsync_mode = AV_SYNC_MODE_AMASTER;
+    } else {
+      GST_INFO ("no amlhalasink in pipeline");
+    }
+#else
+    GstClock *clock= GST_ELEMENT_CLOCK(element);
+    const gchar *clock_name;
+
+    clock_name = gst_object_get_name(GST_OBJECT_CAST(clock));
+    if (clock_name) {
+      const gchar *aml_clock_name = "GstAmlSinkClock";
+      int len = strlen(aml_clock_name);
+
+      if (!strncmp(clock_name, aml_clock_name, len)) {
+        GST_WARNING ("find GstAmlSinkClock");
+        priv->avsync_mode = AV_SYNC_MODE_AMASTER;
+      }
+      g_free (clock_name);
+    } else {
+      GST_INFO ("no clock in pipeline");
+    }
+#endif
+    rc = display_start_avsync (priv->render, priv->avsync_mode);
+    if (rc) {
+      GST_ERROR ("start avsync error");
+      goto exit;
+    }
+  }
+
   while (!priv->quitVideoOutputThread) {
     gint64 frame_ts;
     struct capture_buffer *cb;
@@ -1008,10 +1098,14 @@ static gpointer video_decode_thread(gpointer data)
       if (ret > 0)
         break;
       if (priv->quitVideoOutputThread)
-        goto exit;
+        break;
+
+      if (priv->avsync_paused && !priv->paused) {
+        display_set_pause (priv->render, false);
+        priv->avsync_paused = false;
+      }
       if (errno == EINTR)
         continue;
-
     }
 
     if (pfd.revents & POLLPRI) {
@@ -1031,6 +1125,20 @@ static gpointer video_decode_thread(gpointer data)
       continue;
     }
 
+    /* pause logic */
+    if (priv->avsync_paused && !priv->paused) {
+      display_set_pause (priv->render, false);
+      priv->avsync_paused = false;
+    } else if (!priv->avsync_paused && priv->paused) {
+      display_set_pause (priv->render, true);
+      priv->avsync_paused = true;
+    }
+
+    if (cb->buf.flags & V4L2_BUF_FLAG_LAST) {
+      GST_WARNING_OBJECT (sink, "get last frame");
+      continue;
+    }
+
     frame_ts = GST_TIMEVAL_TO_TIME(cb->buf.timestamp);
     if (frame_ts < priv->segment.start) {
       GST_INFO ("drop frame %lld before start %lld", frame_ts, priv->segment.start);
@@ -1039,6 +1147,8 @@ static gpointer video_decode_thread(gpointer data)
     }
 
     priv->position = priv->segment.start + (frame_ts - priv->first_ts);
+
+    GST_LOG_OBJECT (sink, "frame %lld position %lld", frame_ts, priv->position);
 
     if (priv->out_frame_cnt == 0) {
       GST_DEBUG("emit first frame signal");
@@ -1052,24 +1162,28 @@ static gpointer video_decode_thread(gpointer data)
     else
       cb->drm_frame->duration = 0;
 
+    cb->drm_frame->pri_dec = cb;
+    cb->drm_frame->pts = gst_util_uint64_scale_int (frame_ts, PTS_90K, GST_SECOND);
     //TODO: handle scale_set in drm
     display_engine_show (priv->render, cb->drm_frame, &priv->window);
   }
 
 exit:
-    /* stop output port */
-    type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    rc = ioctl (priv->fd, VIDIOC_STREAMOFF, &type);
-    if (rc)
-        GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",rc);
+  display_stop_avsync (priv->render);
+  /* stop output port */
+  type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+  rc = ioctl (priv->fd, VIDIOC_STREAMOFF, &type);
+  if (rc)
+    GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",rc);
 
-    /* stop capture port */
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    rc = ioctl (priv->fd, VIDIOC_STREAMOFF, &type);
-    if (rc)
-        GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",rc);
+  /* stop capture port */
+  type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+  rc = ioctl (priv->fd, VIDIOC_STREAMOFF, &type);
+  if (rc)
+    GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",rc);
 
-    return NULL;
+  GST_INFO ("quit");
+  return NULL;
 }
 
 static int start_video_thread (GstAmlVsink * sink)
@@ -1092,35 +1206,40 @@ static int start_video_thread (GstAmlVsink * sink)
 static int get_output_buffer(GstAmlVsink * sink)
 {
   GstAmlVsinkPrivate *priv = sink->priv;
-	int index= -1;
-	int i;
+  int index= -1;
+  int i;
 
-	for (i= 0; i < priv->ob_num; ++i) {
-		if (!priv->ob[i]->queued) {
-			index= i;
-			break;
-		}
-	}
+  for (i= 0; i < priv->ob_num; ++i) {
+    if (!priv->ob[i]->queued) {
+      index= i;
+      break;
+    }
+  }
 
-	if (index < 0) {
-		int rc;
-		struct v4l2_buffer buf;
-		struct v4l2_plane plane;
+  if (index < 0) {
+    int rc;
+    struct v4l2_buffer buf;
+    struct v4l2_plane plane;
 
-		memset (&buf, 0, sizeof(buf));
-		buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-		buf.memory = priv->output_mode;
-		buf.length = 1;
-		buf.m.planes = &plane;
-		rc = ioctl ( priv->fd, VIDIOC_DQBUF, &buf );
-		if (!rc) {
-      index = buf.index;
-			priv->ob[index]->plane = plane;
-			priv->ob[index]->buf = buf;
-			priv->ob[index]->queued = false;
-		}
-	}
-	return index;
+    memset (&buf, 0, sizeof(buf));
+    buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+    buf.memory = priv->output_mode;
+    buf.length = 1;
+    buf.m.planes = &plane;
+    rc = ioctl ( priv->fd, VIDIOC_DQBUF, &buf );
+    if (!rc) {
+      GST_OBJECT_LOCK (sink);
+      if (priv->ob) {
+        index = buf.index;
+        priv->ob[index]->plane = plane;
+        priv->ob[index]->buf = buf;
+        priv->ob[index]->queued = false;
+      } else
+        index= -1;
+      GST_OBJECT_UNLOCK (sink);
+    }
+  }
+  return index;
 }
 
 static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
@@ -1171,7 +1290,14 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
 
   index = get_output_buffer (sink);
   if (index < 0) {
-    GST_ERROR ("can not get output buffer");
+    GST_ERROR ("can not get output buffer %d", errno);
+    goto exit;
+  }
+
+  GST_OBJECT_LOCK (sink);
+  if (!priv->ob) {
+    GST_OBJECT_UNLOCK (sink);
+    GST_INFO ("in stopping sequence, drop buffer");
     goto exit;
   }
   ob = priv->ob[index];
@@ -1197,6 +1323,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
 
     rc = ioctl (priv->fd, VIDIOC_QBUF, &ob->buf );
     if (rc) {
+      GST_OBJECT_UNLOCK (sink);
       GST_ERROR ("queuing output buffer failed: rc %d errno %d", rc, errno );
       goto exit;
     }
@@ -1214,6 +1341,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       gsize copylen;
 
       if ( priv->flushing_) {
+        GST_OBJECT_UNLOCK (sink);
         GST_WARNING_OBJECT (sink, "drop frame in flushing");
         goto exit;
       }
@@ -1233,6 +1361,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       ob->buf.m.planes[0].bytesused = copylen;
       rc = ioctl (priv->fd, VIDIOC_QBUF, &ob->buf);
       if (rc) {
+        GST_OBJECT_UNLOCK (sink);
         GST_ERROR("queuing output buffer failed: rc %d errno %d", rc, errno);
         goto exit;
       }
@@ -1247,13 +1376,14 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     }
     gst_buffer_unmap (buf, &map);
   }
+  GST_OBJECT_UNLOCK (sink);
 
   priv->in_frame_cnt++;
 
   if (!priv->output_start) {
     uint32_t type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
 
-    GST_DEBUG ("output VIDIOC_STREAMON");
+    GST_INFO ("output VIDIOC_STREAMON");
     rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
     if (rc) {
       GST_ERROR ("streamon failed for output: rc %d errno %d", rc, errno );
@@ -1273,6 +1403,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       GST_ERROR_OBJECT (sink, "setup capture fail");
       return GST_FLOW_ERROR;
     }
+    GST_INFO ("setup capture port");
 
     if (start_video_thread (sink)) {
       GST_ERROR("start_video_thread failed");
@@ -1387,9 +1518,14 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
 
   /* render init */
   priv->render = display_engine_start(priv);
-  display_engine_register_cb(capture_buffer_recycle);
-  if (!priv->render)
+  if (!priv->render) {
+    GST_ERROR ("start render fail");
     goto error;
+  }
+  display_engine_register_cb(capture_buffer_recycle);
+
+  priv->paused = TRUE;
+  priv->avsync_paused = FALSE;
 
   return GST_STATE_CHANGE_SUCCESS;
 error:
@@ -1432,23 +1568,35 @@ static void reset_decoder(GstAmlVsink *sink)
 
   recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
   g_thread_join (priv->videoOutputThread);
+  priv->videoOutputThread = NULL;
+
+  GST_INFO_OBJECT (sink, "decoder reset");
 }
 
 static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
 {
   GstAmlVsinkPrivate *priv = sink->priv;
 
-  display_engine_stop (priv->render);
+  GST_OBJECT_LOCK (sink);
+  priv->flushing_ = TRUE;
+  reset_decoder (sink);
 
   v4l_unreg_event (priv->fd);
 
-  reset_decoder (sink);
-
+  pthread_mutex_lock (&priv->res_lock);
   if (priv->fd > 0) {
     close (priv->fd);
     priv->fd = -1;
   }
+  pthread_mutex_unlock (&priv->res_lock);
+  GST_OBJECT_UNLOCK (sink);
+
+  display_engine_stop (priv->render);
+
+  GST_OBJECT_LOCK (sink);
   vsink_reset (sink);
+  GST_OBJECT_UNLOCK (sink);
+
   return GST_STATE_CHANGE_SUCCESS;
 }
 
@@ -1468,35 +1616,29 @@ gst_aml_vsink_change_state (GstElement * element,
     }
     case GST_STATE_CHANGE_READY_TO_PAUSED:
     {
-      GST_DEBUG_OBJECT(sink, "ready to paused");
-      ready_to_pause (sink);
-      priv->paused = TRUE;
-      display_set_pause (priv->render, true);
+      GST_INFO_OBJECT(sink, "ready to paused");
+      gst_base_sink_set_async_enabled (GST_BASE_SINK_CAST(sink), FALSE);
+      ret = ready_to_pause (sink);
       break;
     }
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
     {
-      GST_DEBUG_OBJECT(sink, "paused to playing");
-      if (priv->paused) {
-        display_set_pause (priv->render, false);
-        priv->paused = FALSE;
-      }
+      GST_INFO_OBJECT(sink, "paused to playing");
+      priv->paused = FALSE;
       break;
     }
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
     {
-      GST_DEBUG_OBJECT(sink, "playing to paused");
-      if (!priv->paused) {
-        display_set_pause (priv->render, true);
-        priv->paused = TRUE;
-      }
-      display_set_pause (priv->render, true);
+      GST_INFO_OBJECT(sink, "playing to paused");
+      priv->paused = TRUE;
       break;
     }
     case GST_STATE_CHANGE_PAUSED_TO_READY:
-      GST_DEBUG_OBJECT(sink, "paused to ready");
+    {
+      GST_INFO_OBJECT(sink, "paused to ready");
       pause_to_ready (sink);
       break;
+    }
     default:
       break;
   }
@@ -1505,8 +1647,10 @@ gst_aml_vsink_change_state (GstElement * element,
 
   switch (transition) {
     case GST_STATE_CHANGE_READY_TO_NULL:
-      GST_DEBUG_OBJECT(sink, "ready to null");
+    {
+      GST_INFO_OBJECT(sink, "ready to null");
       break;
+    }
     default:
       break;
   }
@@ -1520,6 +1664,11 @@ int capture_buffer_recycle(void* priv_data, void* handle)
   struct capture_buffer *frame = handle;
   GstAmlVsinkPrivate *priv = priv_data;
 
+  if (!frame || !priv) {
+    GST_ERROR ("invalid para %p %p", priv_data, handle);
+    return -1;
+  }
+
   if (!frame->drm_frame->displayed)
     priv->dropped_frame_num++;
 
@@ -1528,11 +1677,14 @@ int capture_buffer_recycle(void* priv_data, void* handle)
     GST_DEBUG ("free index:%d\n", frame->buf.index);
     frame->drm_frame->destroy(frame->drm_frame);
     free(frame);
+    pthread_mutex_unlock (&priv->res_lock);
     goto exit;
   }
 
-  if (priv->eos)
+  if (priv->eos || priv->fd < 0) {
+    pthread_mutex_unlock (&priv->res_lock);
     goto exit;
+  }
 
   ret = v4l_queue_capture_buffer(priv->fd, frame);
   if (ret) {

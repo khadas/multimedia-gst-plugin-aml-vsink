@@ -210,7 +210,7 @@ int v4l_unreg_event(int fd)
 
   evtsub.type= V4L2_EVENT_ALL;
   rc = ioctl(fd, VIDIOC_UNSUBSCRIBE_EVENT, &evtsub );
-  if (!rc)
+  if (rc)
     GST_ERROR("wstStopEvents: event unsubscribe failed rc %d (errno %d)", rc, errno);
   return rc;
 }
@@ -343,6 +343,7 @@ void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num
       free (ob[i]);
     }
     free (ob);
+    *ob = NULL;
   }
 }
 
@@ -508,6 +509,7 @@ void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t n
       }
     }
     free (cb);
+    *cb = NULL;
   }
 }
 
