@@ -690,9 +690,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 		}
 	}
 
-  vsink_reset (sink);
   return TRUE;
-
 error:
     return FALSE;
 }
@@ -1525,9 +1523,8 @@ gst_aml_vsink_render (GstAmlVsink * sink, GstBuffer * buf)
         !GST_BUFFER_FLAG_IS_SET (buf, GST_BUFFER_FLAG_DELTA_UNIT));
   }
 
-  decode_buf (sink, buf);
+  ret = decode_buf (sink, buf);
 
-  ret = GST_FLOW_OK;
 done:
   gst_buffer_unref (buf);
   return ret;
