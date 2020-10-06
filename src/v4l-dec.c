@@ -370,6 +370,7 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
 
   w = fmt.fmt.pix_mp.width;
   h = fmt.fmt.pix_mp.height;
+  GST_WARNING ("buffer size %dx%d", w, h);
 
   if (dw_mode != VDEC_DW_AFBC_ONLY) {
     fmt.fmt.pix_mp.num_planes = 2;
@@ -430,9 +431,11 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
       goto exit;
     }
     cb[i]->id = i;
-    cb[i]->drm_frame = display_create_buffer(drm_handle, w, h,
+    cb[i]->drm_frame = display_create_buffer (drm_handle,
+        w, h,
         (dw_mode == VDEC_DW_AFBC_ONLY)? FRAME_FMT_AFBC:FRAME_FMT_NV12,
-        fmt.fmt.pix_mp.num_planes, secure);
+        fmt.fmt.pix_mp.num_planes,
+        secure);
 
     if (!cb[i]->drm_frame) {
       GST_ERROR ("drm fail to alloc gem buffer %dx%d %d", w, h, i);
@@ -465,9 +468,10 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
 
     rc = ioctl (fd, VIDIOC_QBUF, buf);
     if (rc) {
-      GST_ERROR("VIDIOC_QBUF cap %d error", i);
+      GST_ERROR ("VIDIOC_QBUF cap %d error", i);
       goto exit;
     }
+    GST_DEBUG ("queue cb %d", i);
   }
 
   *buf_cnt = cnt;
@@ -511,6 +515,27 @@ void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t n
     free (cb);
     *cb = NULL;
   }
+}
+
+int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode)
+{
+  int rc;
+  struct v4l2_streamparm streamparm;
+  struct aml_dec_params *decParm = (struct aml_dec_params*)streamparm.parm.raw_data;
+
+  memset (&streamparm, 0, sizeof(streamparm));
+  streamparm.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+  decParm->parms_status = V4L2_CONFIG_PARM_DECODE_CFGINFO;
+  decParm->cfg.double_write_mode = dw_mode;
+
+  if (fmt != V4L2_PIX_FMT_MPEG2)
+    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS;
+
+  rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
+  if (rc)
+    GST_ERROR("VIDIOC_S_PARAM failed for aml driver raw_data: %d", rc);
+
+  return rc;
 }
 
 int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
@@ -736,7 +761,7 @@ int v4l_set_secure_mode(int fd, uint32_t w, uint32_t h, bool secure)
 
 #define CODEC_MM_TVP "/sys/class/codec_mm/tvp_enable"
   if (secure) {
-    GST_WARNING ("secure video\n");
+    GST_WARNING ("secure video");
     if ( w > 1920 || h > 1080)
       config_sys_node(CODEC_MM_TVP, "2");
     else if (w == 0 || h == 0)
@@ -744,7 +769,7 @@ int v4l_set_secure_mode(int fd, uint32_t w, uint32_t h, bool secure)
     else
       config_sys_node(CODEC_MM_TVP, "1");
   } else {
-    GST_WARNING ("non-secure video\n");
+    GST_WARNING ("non-secure video");
     config_sys_node(CODEC_MM_TVP, "0");
   }
 

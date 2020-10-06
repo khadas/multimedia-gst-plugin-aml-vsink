@@ -84,10 +84,15 @@ struct _GstAmlVsinkPrivate
   struct v4l2_fmtdesc *capture_formats;
   uint32_t cb_num;
   struct capture_buffer **cb;
+  gboolean capture_port_config;
 
   /* output thread */
   gboolean quitVideoOutputThread;
   GThread *videoOutputThread;
+
+  /* eos wating thread */
+  gboolean quit_eos_wait;
+  GThread *eos_wait_thread;
 
   /* render */
   void *render;
@@ -620,6 +625,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
       priv->dw_mode = VDEC_DW_AFBC_1_1_DW;
     break;
   }
+  GST_WARNING_OBJECT (sink, "dw mode %d", priv->dw_mode);
 
   /* HDR */
 	if (gst_structure_has_field(structure, "colorimetry")) {
@@ -700,6 +706,54 @@ static inline void vsink_reset (GstAmlVsink * sink)
   priv->first_ts_set = FALSE;
   priv->output_port_config = FALSE;
   priv->output_start = FALSE;
+  priv->capture_port_config = FALSE;
+}
+
+static gpointer video_eos_thread(gpointer data)
+{
+  GstAmlVsink * sink = data;
+  GstAmlVsinkPrivate *priv = sink->priv;
+
+  prctl (PR_SET_NAME, "aml_eos_t");
+  GST_INFO ("enter");
+  while (!priv->quit_eos_wait) {
+    usleep (10000);
+    if (priv->eos) {
+      GstMessage * message;
+
+      GST_WARNING_OBJECT (sink, "Posting EOS");
+      message = gst_message_new_eos (GST_OBJECT_CAST (sink));
+      gst_message_set_seqnum (message, priv->seqnum);
+      gst_element_post_message (GST_ELEMENT_CAST (sink), message);
+      break;
+    }
+  }
+  GST_INFO ("quit");
+  return NULL;
+}
+
+static int start_eos_thread (GstAmlVsink *sink)
+{
+  GstAmlVsinkPrivate *priv = sink->priv;
+
+  priv->eos_wait_thread = g_thread_new ("video eos thread", video_eos_thread, sink);
+  if (!priv->eos_wait_thread) {
+      GST_ERROR_OBJECT (sink, "fail to create thread");
+      return -1;
+  }
+  return 0;
+}
+
+static int stop_eos_thread (GstAmlVsink *sink)
+{
+  GstAmlVsinkPrivate *priv = sink->priv;
+
+  if (priv->eos_wait_thread) {
+    priv->quit_eos_wait = TRUE;
+    g_thread_join (priv->eos_wait_thread);
+    priv->eos_wait_thread = NULL;
+  }
+  return 0;
 }
 
 static gboolean
@@ -719,7 +773,10 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
       };
 
       priv->received_eos = TRUE;
-      GST_WARNING_OBJECT (sink, "EOS received");
+      priv->eos = FALSE;
+      priv->seqnum = gst_event_get_seqnum (event);
+      GST_WARNING_OBJECT (sink, "EOS received seqnum %d", priv->seqnum);
+
       GST_OBJECT_LOCK (sink);
       /* flush decoder */
       ret = ioctl(priv->fd, VIDIOC_DECODER_CMD, &cmd);
@@ -727,8 +784,8 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
         GST_ERROR_OBJECT (sink, "V4L2_DEC_CMD_STOP output fail %d",errno);
       GST_OBJECT_UNLOCK (sink);
 
-      priv->seqnum = gst_event_get_seqnum (event);
-      GST_DEBUG_OBJECT (sink, "eos seqnum #%" G_GUINT32_FORMAT, priv->seqnum);
+      result = start_eos_thread (sink);
+
       break;
     }
     case GST_EVENT_FLUSH_START:
@@ -744,8 +801,11 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
     case GST_EVENT_FLUSH_STOP:
     {
       GST_INFO_OBJECT (sink, "flush stop");
+
+      GST_OBJECT_LOCK (sink);
       reset_decoder (sink);
       vsink_reset (sink);
+      GST_OBJECT_UNLOCK (sink);
 #ifdef DUMP_TO_FILE
       file_index++;
 #endif
@@ -864,7 +924,7 @@ static void handle_v4l_event (GstAmlVsink *sink)
     struct v4l2_format fmtOut;
     int32_t type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
-    g_print("vsink: source change event\n");
+    GST_WARNING ("source change event");
     memset (&fmtOut, 0, sizeof(fmtOut));
     fmtOut.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     rc = ioctl (priv->fd, VIDIOC_G_FMT, &fmtOut);
@@ -903,6 +963,7 @@ static void handle_v4l_event (GstAmlVsink *sink)
         GST_ERROR ("setup capture fail");
         goto exit;
       }
+      priv->capture_port_config = TRUE;
 
       rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
       if ( rc < 0 )
@@ -921,16 +982,12 @@ static void handle_v4l_event (GstAmlVsink *sink)
       priv->visible_w = selection.r.width;
       priv->visible_h = selection.r.height;
       GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
+    } else {
+      GST_WARNING ("ignore source change event at beginning");
     }
   } else if (event.type == V4L2_EVENT_EOS) {
-    GstMessage * message;
-
-    GST_WARNING_OBJECT (sink, "Posting EOS");
+    GST_WARNING_OBJECT (sink, "V4L EOS");
     priv->eos = TRUE;
-
-    message = gst_message_new_eos (GST_OBJECT_CAST (sink));
-    gst_message_set_seqnum (message, priv->seqnum);
-    gst_element_post_message (GST_ELEMENT_CAST (sink), message);
   }
 exit:
   GST_OBJECT_UNLOCK (sink);
@@ -1119,6 +1176,9 @@ static gpointer video_decode_thread(gpointer data)
       continue;
     }
 
+    if (priv->eos)
+      continue;
+
     cb = dqueue_capture_buffer (sink);
     if (!cb) {
       GST_WARNING_OBJECT (sink, "capture buf not available");
@@ -1197,6 +1257,10 @@ static int start_video_thread (GstAmlVsink * sink)
   if (!priv->videoOutputThread) {
     GST_DEBUG_OBJECT (sink, "starting video thread");
     priv->videoOutputThread = g_thread_new ("video output thread", video_decode_thread, sink);
+    if (!priv->videoOutputThread) {
+      GST_ERROR_OBJECT (sink, "fail to create thread");
+      return -1;
+    }
   }
 
   priv->output_start = TRUE;
@@ -1230,10 +1294,17 @@ static int get_output_buffer(GstAmlVsink * sink)
     if (!rc) {
       GST_OBJECT_LOCK (sink);
       if (priv->ob) {
+        struct output_buffer *ob;
+
         index = buf.index;
-        priv->ob[index]->plane = plane;
-        priv->ob[index]->buf = buf;
-        priv->ob[index]->queued = false;
+        ob = priv->ob[index];
+        ob->plane = plane;
+        ob->buf = buf;
+        ob->queued = false;
+        if (ob->gstbuf) {
+          gst_buffer_unref (ob->gstbuf);
+          ob->gstbuf = NULL;
+        }
       } else
         index= -1;
       GST_OBJECT_UNLOCK (sink);
@@ -1263,6 +1334,14 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
         priv->es_height, priv->secure);
     if (rc) {
       GST_ERROR_OBJECT (sink, "set secure mode fail");
+      return GST_FLOW_ERROR;
+    }
+
+    /* Need to set correct dw mode even before first frame.
+     * Restrict apply that dw 16 can not be changed to other mode
+     * in the run time, but dw 0/1/2/4 can be changed in runtime */
+    if (v4l_dec_dw_config (priv->fd, priv->output_format, priv->dw_mode)) {
+      GST_ERROR("v4l_dec_dw_config failed");
       return GST_FLOW_ERROR;
     }
 
@@ -1304,11 +1383,6 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
 
   if (priv->output_mode == V4L2_MEMORY_DMABUF) {
     gsize dataOffset, maxSize;
-
-    if (ob->gstbuf) {
-      gst_buffer_unref (ob->gstbuf);
-      ob->gstbuf = NULL;
-    }
 
     if (GST_BUFFER_PTS_IS_VALID (buf))
       GST_TIME_TO_TIMEVAL (GST_BUFFER_PTS(buf), ob->buf.timestamp);
@@ -1403,6 +1477,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       GST_ERROR_OBJECT (sink, "setup capture fail");
       return GST_FLOW_ERROR;
     }
+    priv->capture_port_config = TRUE;
     GST_INFO ("setup capture port");
 
     if (start_video_thread (sink)) {
@@ -1566,7 +1641,11 @@ static void reset_decoder(GstAmlVsink *sink)
     GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",ret);
   }
 
+  pthread_mutex_lock (&priv->res_lock);
   recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
+  priv->capture_port_config = FALSE;
+  pthread_mutex_unlock (&priv->res_lock);
+
   g_thread_join (priv->videoOutputThread);
   priv->videoOutputThread = NULL;
 
@@ -1592,6 +1671,7 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
   GST_OBJECT_UNLOCK (sink);
 
   display_engine_stop (priv->render);
+  stop_eos_thread (sink);
 
   GST_OBJECT_LOCK (sink);
   vsink_reset (sink);
@@ -1681,7 +1761,7 @@ int capture_buffer_recycle(void* priv_data, void* handle)
     goto exit;
   }
 
-  if (priv->eos || priv->fd < 0) {
+  if (priv->eos || priv->fd < 0 || !priv->capture_port_config) {
     pthread_mutex_unlock (&priv->res_lock);
     goto exit;
   }

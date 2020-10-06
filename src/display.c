@@ -851,18 +851,18 @@ struct drm_frame* display_create_buffer(void* handle,
 
     rc = create_meson_gem_buffer(disp->drm_cli_fd, format, gem_buf, secure);
     if (rc < 0) {
-        printf("create_meson_gem_buffer fail %d\n", rc);
+        GST_ERROR ("create_meson_gem_buffer fail %d\n", rc);
         goto error;
     }
     if (planes_count == 2)
-        printf("export_fd: %d/%d\n",
+        GST_DEBUG ("export_fd: %d/%d",
                 gem_buf->export_fds[0],
                 gem_buf->export_fds[1]);
     else
-        printf("export_fd: %d\n",
+        GST_DEBUG ("export_fd: %d",
                 gem_buf->export_fds[0]);
 
-    rc = add_framebuffer(disp->drm_cli_fd, gem_buf,
+    rc = add_framebuffer (disp->drm_cli_fd, gem_buf,
             format, DRM_FORMAT_MOD_NONE);
     if (rc < 0) {
         printf("Unable to add DRM framebuffer\n");
@@ -871,9 +871,9 @@ struct drm_frame* display_create_buffer(void* handle,
 
     return frame;
 error:
-    close_buffer(disp->drm_cli_fd, gem_buf);
-    if (frame) free(frame);
-    if (gem_buf) free(gem_buf);
+    close_buffer (disp->drm_cli_fd, gem_buf);
+    if (frame) free (frame);
+    if (gem_buf) free (gem_buf);
     return NULL;
 }
 
