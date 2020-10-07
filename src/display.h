@@ -6,12 +6,13 @@
  *
  * Description:
  */
-#ifndef __DRM_339_H__
-#define __DRM_339_H__
+#ifndef __DISPLAY_339_H__
+#define __DISPLAY_339_H__
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <aml_avsync.h>
+#include <meson_drm_util.h>
 
 enum frame_format {
   FRAME_FMT_NV12,
@@ -32,10 +33,10 @@ struct rect {
 
 //TODO: separete internal and external fields
 struct drm_frame {
-  void* gem;
+  struct drm_buf *buf;
   drm_frame_destroy destroy;
+
   uint32_t pts;
-  bool last_flag;
   void* pri_sync;
   /* false is dropped by avsync */
   bool displayed;
@@ -54,11 +55,10 @@ int display_engine_register_cb(displayed_cb_func cb);
 
 struct drm_frame* display_create_buffer(void *handle,
         unsigned int width, unsigned int height,
-        enum frame_format format, int planes_count, bool secure);
+        enum frame_format format, int planes_count,
+        bool secure, bool pip);
 int display_get_buffer_fds(struct drm_frame* drm_f, int *fd, int cnt);
 int display_engine_show(void* handle, struct drm_frame* frame, struct rect* window);
-int display_flush (void *handle);
-
 int display_start_avsync(void *handle, enum sync_mode mode);
 void display_stop_avsync(void *handle);
 

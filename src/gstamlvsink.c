@@ -957,9 +957,11 @@ static void handle_v4l_event (GstAmlVsink *sink)
         goto exit;
       }
 
-      priv->cb = v4l_setup_capture_port (priv->fd, &priv->cb_num,
+      priv->cb = v4l_setup_capture_port (
+          priv->fd, &priv->cb_num,
           priv->dw_mode, priv->render,
-          &priv->coded_w, &priv->coded_h, priv->secure);
+          &priv->coded_w, &priv->coded_h,
+          priv->secure, priv->pip);
       if (!priv->cb) {
         GST_ERROR ("setup capture fail");
         goto exit;
@@ -1471,9 +1473,11 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       return GST_FLOW_ERROR;
     }
 
-    priv->cb = v4l_setup_capture_port (priv->fd, &priv->cb_num,
+    priv->cb = v4l_setup_capture_port (
+        priv->fd, &priv->cb_num,
         priv->dw_mode, priv->render,
-        &priv->coded_w, &priv->coded_h, priv->secure);
+        &priv->coded_w, &priv->coded_h,
+        priv->secure, priv->pip);
     if (!priv->cb) {
       GST_ERROR_OBJECT (sink, "setup capture fail");
       return GST_FLOW_ERROR;

@@ -348,7 +348,8 @@ void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num
 }
 
 struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
-    uint32_t dw_mode, void *drm_handle, uint32_t *coded_w, uint32_t *coded_h, bool secure)
+    uint32_t dw_mode, void *drm_handle, uint32_t *coded_w, uint32_t *coded_h,
+    bool secure, bool pip)
 {
   int rc, i, j;
   struct v4l2_format fmt;
@@ -435,7 +436,7 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
         w, h,
         (dw_mode == VDEC_DW_AFBC_ONLY)? FRAME_FMT_AFBC:FRAME_FMT_NV12,
         fmt.fmt.pix_mp.num_planes,
-        secure);
+        secure, pip);
 
     if (!cb[i]->drm_frame) {
       GST_ERROR ("drm fail to alloc gem buffer %dx%d %d", w, h, i);
