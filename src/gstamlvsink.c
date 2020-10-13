@@ -290,16 +290,13 @@ static gboolean build_caps(GstAmlVsinkClass*klass, struct v4l2_fmtdesc *formats,
           "video/x-h264, " \
           "parsed=(boolean) true, " \
           "alignment=(string) au, " \
-          "stream-format=(string) byte-stream, " \
-          "width=(int) [1,MAX], " "height=(int) [1,MAX] ; " \
+          "stream-format=(string) byte-stream; " \
           "video/x-h264(memory:DMABuf) ; "
           );
       break;
     case V4L2_PIX_FMT_VP9:
       tmp = gst_caps_from_string(
-          "video/x-vp9, " \
-          "width=(int) [1,MAX], " \
-          "height=(int) [1,MAX] ; " \
+          "video/x-vp9; " \
           "video/x-vp9(memory:DMABuf) ; "
           );
       break;
@@ -308,9 +305,7 @@ static gboolean build_caps(GstAmlVsinkClass*klass, struct v4l2_fmtdesc *formats,
           "video/x-h265, " \
           "parsed=(boolean) true, " \
           "alignment=(string) au, " \
-          "stream-format=(string) byte-stream, " \
-          "width=(int) [1,MAX], " \
-          "height=(int) [1,MAX] ; " \
+          "stream-format=(string) byte-stream; " \
           "video/x-h265(memory:DMABuf) ; "
           );
       break;
@@ -586,22 +581,27 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   }
 
   /* frame rate */
-	if (gst_structure_get_fraction (structure, "framerate", &num, &denom)) {
-		if ( denom == 0 )
-      denom= 1;
+  if (gst_structure_get_fraction (structure, "framerate", &num, &denom)) {
+      if ( denom == 0 )
+          denom= 1;
 
-		priv->fr = (double)num/(double)denom;
-		if (priv->fr <= 0.0) {
-			g_print("assume 60 fps\n");
-			priv->fr = 60.0;
-		}
-	}
+      priv->fr = (double)num/(double)denom;
+      if (priv->fr <= 0.0) {
+          g_print("assume 60 fps\n");
+          priv->fr = 60.0;
+      }
+  }
 
   /* dimension */
-	if (gst_structure_get_int (structure, "width", &width ))
-    priv->es_width = width;
-	if (gst_structure_get_int (structure, "height", &height))
-    priv->es_height = width;
+  if (gst_structure_get_int (structure, "width", &width ))
+      priv->es_width = width;
+  else
+      priv->es_width = -1;
+
+  if (gst_structure_get_int (structure, "height", &height))
+      priv->es_height = width;
+  else
+      priv->es_width = -1;
 
   /* setup double write mode */
   switch (priv->output_format) {
@@ -619,11 +619,14 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
       GST_WARNING_OBJECT (sink, "enforce user dw mode %d", priv->dw_mode);
       break;
     }
+    priv->dw_mode = VDEC_DW_AFBC_ONLY;
+#if 0
     if (priv->es_width > 1920 || priv->es_width > 1080)
       priv->dw_mode = VDEC_DW_AFBC_1_2_DW;
     else
       priv->dw_mode = VDEC_DW_AFBC_1_1_DW;
     break;
+#endif
   }
   GST_WARNING_OBJECT (sink, "dw mode %d", priv->dw_mode);
 

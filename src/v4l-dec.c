@@ -687,9 +687,9 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
     }
 
     if (hdr->haveContentLightLevel) {
-			decParm->hdr.color_parms.content_light_level.max_content= hdr->ContentLightLevel[0];
-			decParm->hdr.color_parms.content_light_level.max_pic_average= hdr->ContentLightLevel[1];
-		}
+        decParm->hdr.color_parms.content_light_level.max_content= hdr->ContentLightLevel[0];
+        decParm->hdr.color_parms.content_light_level.max_pic_average= hdr->ContentLightLevel[1];
+    }
 	}
 
   rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
@@ -699,7 +699,7 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   return rc;
 }
 
-int v4l_set_output_format(int fd, uint32_t format, uint32_t w, uint32_t h)
+int v4l_set_output_format(int fd, uint32_t format, int w, int h)
 {
   int rc;
   struct v4l2_format fmt;
@@ -707,8 +707,10 @@ int v4l_set_output_format(int fd, uint32_t format, uint32_t w, uint32_t h)
   memset (&fmt, 0, sizeof(struct v4l2_format));
   fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
   fmt.fmt.pix_mp.pixelformat = format;
-  fmt.fmt.pix_mp.width = w;
-  fmt.fmt.pix_mp.height = h;
+  if (w > 0 && h > 0) {
+    fmt.fmt.pix_mp.width = w;
+    fmt.fmt.pix_mp.height = h;
+  }
   fmt.fmt.pix_mp.num_planes= 1;
   fmt.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE;
   fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
@@ -740,7 +742,7 @@ static int config_sys_node(const char* path, const char* value)
   return 0;
 }
 
-int v4l_set_secure_mode(int fd, uint32_t w, uint32_t h, bool secure)
+int v4l_set_secure_mode(int fd, int w, int h, bool secure)
 {
   int rc;
   struct v4l2_queryctrl queryctrl;
@@ -764,7 +766,7 @@ int v4l_set_secure_mode(int fd, uint32_t w, uint32_t h, bool secure)
     GST_WARNING ("secure video");
     if ( w > 1920 || h > 1080)
       config_sys_node(CODEC_MM_TVP, "2");
-    else if (w == 0 || h == 0)
+    else if (w == -1 || h == -1)
       config_sys_node(CODEC_MM_TVP, "2");
     else
       config_sys_node(CODEC_MM_TVP, "1");
