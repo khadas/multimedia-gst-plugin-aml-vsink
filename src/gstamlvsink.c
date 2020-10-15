@@ -421,7 +421,8 @@ gst_aml_vsink_query (GstElement * element, GstQuery * query)
     case GST_QUERY_LATENCY:
     {
       gst_query_set_latency (query, FALSE, 0, 10*1000*1000);
-      return TRUE;
+      res = TRUE;
+      break;
     }
     case GST_QUERY_POSITION:
     {
@@ -433,6 +434,7 @@ gst_aml_vsink_query (GstElement * element, GstQuery * query)
 
       GST_LOG_OBJECT(sink, "POSITION: %lld", priv->position);
       gst_query_set_position (query, GST_FORMAT_TIME, priv->position);
+      res = TRUE;
       break;
     }
     default:
