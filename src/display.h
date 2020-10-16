@@ -36,6 +36,7 @@ struct drm_frame {
   struct drm_buf *buf;
   drm_frame_destroy destroy;
 
+  void *vaddr; /* for black frame use only */
   uint32_t pts;
   void* pri_sync;
   /* false is dropped by avsync */
@@ -49,7 +50,7 @@ struct drm_frame {
 
 typedef int (*displayed_cb_func)(void* priv, void* handle);
 
-void* display_engine_start(void * priv);
+void *display_engine_start(void* priv, bool pip);
 void display_engine_stop(void * handle);
 int display_engine_register_cb(displayed_cb_func cb);
 
@@ -57,10 +58,11 @@ struct drm_frame* display_create_buffer(void *handle,
         unsigned int width, unsigned int height,
         enum frame_format format, int planes_count,
         bool secure, bool pip);
-int display_get_buffer_fds(struct drm_frame* drm_f, int *fd, int cnt);
-int display_engine_show(void* handle, struct drm_frame* frame, struct rect* window);
+int display_get_buffer_fds(struct drm_frame *drm_f, int *fd, int cnt);
+int display_engine_show(void *handle, struct drm_frame* frame, struct rect *window);
 int display_start_avsync(void *handle, enum sync_mode mode);
 void display_stop_avsync(void *handle);
+int display_show_black_frame(void * handle);
 
 int display_set_pause(void *handle, bool pause);
 #endif
