@@ -46,14 +46,7 @@ struct video_disp {
   int drm_mode_set;
   void *priv;
   pthread_mutex_t avsync_lock;
-
-  struct drm_frame *black_frame;
 };
-
-static struct drm_frame* create_black_frame (void* handle,
-    unsigned int width, unsigned int height, bool pip);
-static void destroy_black_frame (struct drm_frame *frame);
-static int frame_destroy(struct drm_frame* drm_f);
 
 displayed_cb_func display_cb;
 
@@ -64,7 +57,7 @@ static void display_res_change_cb(void *p)
   return;
 }
 
-void *display_engine_start(void* priv, bool pip)
+void *display_engine_start(void* priv)
 {
   struct video_disp *disp;
   struct drm_display *drm;
@@ -84,7 +77,6 @@ void *display_engine_start(void* priv, bool pip)
   disp->priv = priv;
   pthread_mutex_init (&disp->avsync_lock, NULL);
 
-  disp->black_frame = create_black_frame (disp, 64, 64, pip);
   /* avsync log level */
   log_set_level(LOG_INFO);
   return disp;
@@ -129,73 +121,6 @@ static int frame_destroy(struct drm_frame* drm_f)
   return rc;
 }
 
-static struct drm_frame* create_black_frame (void* handle,
-    unsigned int width, unsigned int height, bool pip)
-{
-  struct video_disp *disp = handle;
-  struct drm_buf *gem_buf;
-  struct drm_buf_metadata info;
-  struct drm_frame* frame = calloc(1, sizeof(*frame));
-
-  if (!frame) {
-    GST_ERROR ("oom\n");
-    return NULL;
-  }
-
-  memset(&info, 0 , sizeof(info));
-
-  /* use single planar for black frame */
-  info.width = width;
-  info.height = height;
-  info.flags = 0;
-  info.fourcc = DRM_FORMAT_YUYV;
-
-  if (!pip)
-    info.flags |= MESON_USE_VD1;
-  else
-    info.flags |= MESON_USE_VD2;
-
-  gem_buf = drm_alloc_buf(disp->drm, &info);
-  if (!gem_buf) {
-    GST_ERROR ("Unable to alloc drm buf\n");
-    goto error;
-  }
-
-  frame->buf = gem_buf;
-  frame->pri_drm = handle;
-  frame->destroy = frame_destroy;
-
-  frame->vaddr = mmap (NULL, width * height * 2, PROT_WRITE,
-      MAP_SHARED, gem_buf->fd[0], gem_buf->offsets[0]);
-
-  if (frame->vaddr == MAP_FAILED) {
-    GST_ERROR ("mmap fail %d", errno);
-    drm_free_buf (gem_buf);
-    goto error;
-  }
-
-  /* full screen black frame */
-  memset (frame->vaddr, 0, width * height * 2);
-  gem_buf->crtc_x = 0;
-  gem_buf->crtc_y = 0;
-  gem_buf->crtc_w = -1;
-  gem_buf->crtc_h = -1;
-
-  return frame;
-error:
-  if (frame) free (frame);
-  return NULL;
-}
-
-static void destroy_black_frame (struct drm_frame *frame)
-{
-  if (!frame)
-    return;
-
-  munmap (frame->vaddr, frame->buf->width * frame->buf->height * 2);
-  frame_destroy (frame);
-}
-
 struct drm_frame* display_create_buffer(void* handle,
     unsigned int width, unsigned int height,
     enum frame_format format, int planes_count,
@@ -210,8 +135,6 @@ struct drm_frame* display_create_buffer(void* handle,
     GST_ERROR ("oom\n");
     return NULL;
   }
-
-  memset(&info, 0 , sizeof(info));
 
   info.width = width;
   info.height = height;
@@ -278,7 +201,6 @@ void display_engine_stop(void *handle)
 
   drm_destroy_display (disp->drm);
   pthread_mutex_destroy (&disp->avsync_lock);
-  destroy_black_frame (disp->black_frame);
   free (disp);
 }
 
@@ -416,11 +338,4 @@ int display_set_pause(void *handle, bool pause)
   struct video_disp *disp = handle;
 
   return av_sync_pause (disp->avsync, pause);
-}
-
-int display_show_black_frame(void * handle)
-{
-  struct video_disp *disp = handle;
-
-  return drm_post_buf (disp->drm, disp->black_frame->buf);
 }

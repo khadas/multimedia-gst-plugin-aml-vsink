@@ -131,7 +131,6 @@ enum
   PROP_PIP_VIDEO,
   PROP_VIDEO_FRAME_DROP_NUM,
   PROP_VIDEO_DW_MODE,
-  PROP_SHOW_BLACK_FRAME,
   PROP_LAST
 };
 
@@ -234,11 +233,6 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
       g_param_spec_int ("double-write-mode", "double-write-mode",
         "0/1/2/4/16 Only 16 is valid for h264/mepg2.",
         0, 16, 0, G_PARAM_WRITABLE));
-
-  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_SHOW_BLACK_FRAME,
-      g_param_spec_boolean ("black-frame", "black-frame",
-        "show black frame once get set(value does not matter)",
-        FALSE, G_PARAM_WRITABLE));
 
   g_signals[SIGNAL_FIRSTFRAME]= g_signal_new( "first-video-frame-callback",
       G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
@@ -402,7 +396,6 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->received_eos = FALSE;
   priv->group_id = -1;
   priv->fd = -1;
-  priv->render = NULL;
 }
 
 static void
@@ -461,12 +454,6 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
   GstAmlVsinkPrivate *priv = sink->priv;
 
   switch (property_id) {
-  case PROP_SHOW_BLACK_FRAME:
-  {
-    if (priv->render)
-      display_show_black_frame (priv->render);
-    break;
-  }
   case PROP_VIDEO_DW_MODE:
   {
     int mode = g_value_get_int (value);
@@ -1611,7 +1598,7 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
 #endif
 
   /* render init */
-  priv->render = display_engine_start(priv, priv->pip);
+  priv->render = display_engine_start(priv);
   if (!priv->render) {
     GST_ERROR ("start render fail");
     goto error;
@@ -1690,7 +1677,6 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
   GST_OBJECT_UNLOCK (sink);
 
   display_engine_stop (priv->render);
-  priv->render = NULL;
   stop_eos_thread (sink);
 
   GST_OBJECT_LOCK (sink);
