@@ -1040,11 +1040,11 @@ static struct capture_buffer* dqueue_capture_buffer(GstAmlVsink * sink)
 }
 
 /* detect the existence of amlhalasink */
-static GstElement* detect_audio_sync(GstAmlVsink * sink)
+gboolean detect_audio_sync(GstAmlVsink * sink)
 {
-  GstElement *audioSink = NULL;
   GstElement *pipeline = NULL;
   GstElement *element, *elementPrev = NULL;
+  gboolean found = FALSE;
 
   element = GST_ELEMENT_CAST (sink);
   do {
@@ -1073,9 +1073,10 @@ static GstElement* detect_audio_sync(GstAmlVsink * sink)
             gchar *name = gst_element_get_name (element);
 
             if (strstr(name, "amlhalasink")) {
-              audioSink = (GstElement*)gst_object_ref (element);
+              found = TRUE;
               GST_INFO ("detected audio sink: name (%s)", name);
               g_free (name);
+              g_value_reset (&val);
               break;
             }
           }
@@ -1086,7 +1087,7 @@ static GstElement* detect_audio_sync(GstAmlVsink * sink)
     }
     gst_object_unref(pipeline);
   }
-  return audioSink;
+  return found;
 }
 
 static gpointer video_decode_thread(gpointer data)
@@ -1122,33 +1123,11 @@ static gpointer video_decode_thread(gpointer data)
   /* av sync mode */
   priv->avsync_mode = AV_SYNC_MODE_VMASTER;
   {
-#if 1
-    GstElement *audioSink;
-
-    audioSink = detect_audio_sync (sink);
-    if (audioSink) {
+    if (detect_audio_sync (sink))
       priv->avsync_mode = AV_SYNC_MODE_AMASTER;
-    } else {
+    else
       GST_INFO ("no amlhalasink in pipeline");
-    }
-#else
-    GstClock *clock= GST_ELEMENT_CLOCK(element);
-    const gchar *clock_name;
 
-    clock_name = gst_object_get_name(GST_OBJECT_CAST(clock));
-    if (clock_name) {
-      const gchar *aml_clock_name = "GstAmlSinkClock";
-      int len = strlen(aml_clock_name);
-
-      if (!strncmp(clock_name, aml_clock_name, len)) {
-        GST_WARNING ("find GstAmlSinkClock");
-        priv->avsync_mode = AV_SYNC_MODE_AMASTER;
-      }
-      g_free (clock_name);
-    } else {
-      GST_INFO ("no clock in pipeline");
-    }
-#endif
     rc = display_start_avsync (priv->render, priv->avsync_mode);
     if (rc) {
       GST_ERROR ("start avsync error");
