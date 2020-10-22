@@ -46,9 +46,11 @@ struct video_disp {
   int drm_mode_set;
   void *priv;
   pthread_mutex_t avsync_lock;
+  uint32_t pause_pts;
 };
 
 displayed_cb_func display_cb;
+pause_cb_func pause_cb;
 
 static void display_res_change_cb(void *p)
 {
@@ -75,6 +77,7 @@ void *display_engine_start(void* priv)
   drm_display_register_done_cb (drm, display_res_change_cb, disp);
   disp->drm = drm;
   disp->priv = priv;
+  disp->pause_pts = -1;
   pthread_mutex_init (&disp->avsync_lock, NULL);
 
   /* avsync log level */
@@ -83,6 +86,17 @@ void *display_engine_start(void* priv)
 error:
   free (disp);
   return NULL;
+}
+
+static void pause_pts_cb(uint32_t pts, void* priv)
+{
+  struct video_disp * disp = priv;
+
+  if (pause_cb)
+    pause_cb (disp->priv, pts);
+
+  /* only trigger once */
+  disp->pause_pts = -1;
 }
 
 int display_start_avsync(void *handle, enum sync_mode mode)
@@ -95,6 +109,11 @@ int display_start_avsync(void *handle, enum sync_mode mode)
   if (!disp->avsync) {
     GST_ERROR ("create avsync fails\n");
     return -1;
+  }
+
+  if (disp->pause_pts != -1) {
+    av_sync_set_pause_pts_cb (disp->avsync, pause_pts_cb, disp);
+    av_sync_set_pause_pts (disp->avsync, disp->pause_pts);
   }
   return 0;
 }
@@ -157,6 +176,9 @@ struct drm_frame* display_create_buffer(void* handle,
     info.flags |= MESON_USE_VD1;
   else
     info.flags |= MESON_USE_VD2;
+
+  GST_DEBUG ("create buffer %dx%d fmt %d flag %x", width, height,
+      info.fourcc, info.flags);
 
   gem_buf = drm_alloc_buf(disp->drm, &info);
   if (!gem_buf) {
@@ -345,9 +367,23 @@ int display_engine_register_cb(displayed_cb_func cb)
   return 0;
 }
 
+int pause_pts_register_cb(pause_cb_func cb)
+{
+  pause_cb = cb;
+  return 0;
+}
+
 int display_set_pause(void *handle, bool pause)
 {
   struct video_disp *disp = handle;
 
   return av_sync_pause (disp->avsync, pause);
+}
+
+int display_set_pause_pts(void *handle, uint32_t pause_pts)
+{
+  struct video_disp *disp = handle;
+
+  disp->pause_pts = pause_pts;
+  return 0;
 }
