@@ -529,7 +529,7 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode)
   decParm->parms_status = V4L2_CONFIG_PARM_DECODE_CFGINFO;
   decParm->cfg.double_write_mode = dw_mode;
 
-  if (fmt != V4L2_PIX_FMT_MPEG2)
+  if (fmt != V4L2_PIX_FMT_MPEG2 && fmt != V4L2_PIX_FMT_MPEG1)
     decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS;
 
   rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );

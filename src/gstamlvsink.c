@@ -269,6 +269,15 @@ static gboolean build_caps(GstAmlVsinkClass*klass, struct v4l2_fmtdesc *formats,
 
   for (i= 0; i < fnum; ++i) {
     switch (formats[i].pixelformat) {
+    case V4L2_PIX_FMT_MPEG1:
+      tmp = gst_caps_from_string(
+          "video/mpeg, " \
+          "mpegversion=(int) 1, " \
+          "parsed=(boolean) true, " \
+          "systemstream = (boolean) false ; "
+          );
+      break;
+
     case V4L2_PIX_FMT_MPEG2:
       tmp = gst_caps_from_string(
           "video/mpeg, " \
@@ -608,6 +617,8 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   /* setup double write mode */
   switch (priv->output_format) {
   case V4L2_PIX_FMT_MPEG:
+  case V4L2_PIX_FMT_MPEG1:
+  case V4L2_PIX_FMT_MPEG2:
   case V4L2_PIX_FMT_H264:
     if (priv->dw_mode_user_set) {
       GST_WARNING_OBJECT (sink, "overwrite user dw mode %d --> %d", priv->dw_mode, VDEC_DW_NO_AFBC);
