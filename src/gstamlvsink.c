@@ -1032,7 +1032,6 @@ static struct capture_buffer* dqueue_capture_buffer(GstAmlVsink * sink)
     cb->buf = buf;
     memcpy (&cb->plane, buf.m.planes, sizeof(struct v4l2_plane)*2);
     cb->buf.m.planes = cb->plane;
-    cb->queued = false;
   }
   return cb;
 }
@@ -1216,6 +1215,7 @@ static gpointer video_decode_thread(gpointer data)
     cb->drm_frame->pts = gst_util_uint64_scale_int (frame_ts, PTS_90K, GST_SECOND);
     //TODO: handle scale_set in drm
     display_engine_show (priv->render, cb->drm_frame, &priv->window);
+    cb->displayed = true;
   }
 
 exit:
@@ -1745,7 +1745,7 @@ int capture_buffer_recycle(void* priv_data, void* handle)
 
   pthread_mutex_lock (&priv->res_lock);
   if (frame->free_on_recycle) {
-    GST_DEBUG ("free index:%d\n", frame->buf.index);
+    GST_DEBUG ("free index %d\n", frame->buf.index);
     frame->drm_frame->destroy(frame->drm_frame);
     free(frame);
     pthread_mutex_unlock (&priv->res_lock);

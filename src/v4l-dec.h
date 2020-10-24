@@ -41,7 +41,7 @@ struct capture_buffer {
   struct v4l2_plane plane[2];
   uint8_t *vaddr[2];
   int gem_fd[2];
-  bool queued;
+  bool displayed;
   uint32_t id;
 
   bool free_on_recycle;

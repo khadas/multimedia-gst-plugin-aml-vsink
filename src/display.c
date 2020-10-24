@@ -258,6 +258,7 @@ static void * display_thread_func(void * arg)
       if (f_p3) {
         f_p3->displayed = true;
         display_cb(disp->priv, f_p3->pri_dec);
+        f_p3 = NULL;
       }
 
       f_p3 = f_p2;
@@ -266,6 +267,14 @@ static void * display_thread_func(void * arg)
       first_frame_rendered = true;
     }
   }
+
+  if (f_p3)
+    display_cb(disp->priv, f_p3->pri_dec);
+  if (f_p2)
+    display_cb(disp->priv, f_p2->pri_dec);
+  if (f_p1)
+    display_cb(disp->priv, f_p1->pri_dec);
+
   GST_INFO ("quit %s\n", __func__);
   return NULL;
 }

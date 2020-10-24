@@ -503,10 +503,13 @@ void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t n
     }
 
     for (i = 0 ; i < num ; i++) {
-      if (!cb[i])
+      if (!cb[i]) {
+        GST_WARNING ("index %d freed", i);
         continue;
-      if (cb[i]->queued) {
+      }
+      if (!cb[i]->displayed) {
         cb[i]->drm_frame->destroy(cb[i]->drm_frame);
+        GST_DEBUG ("free index %d", i);
         free (cb[i]);
         cb [i] = NULL;
       } else {
@@ -790,7 +793,7 @@ int v4l_queue_capture_buffer(int fd, struct capture_buffer *cb)
 {
   int ret;
 
-  cb->queued = true;
+  cb->displayed = false;
   ret = ioctl(fd, VIDIOC_QBUF, &cb->buf);
   if (ret) {
     GST_ERROR ("cap VIDIOC_QBUF %dth buf fail %d\n",
