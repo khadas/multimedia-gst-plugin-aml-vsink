@@ -1065,18 +1065,13 @@ gboolean detect_audio_sync(GstAmlVsink * sink)
       while (gst_iterator_next (iter, &val) == GST_ITERATOR_OK) {
         element = (GstElement*)g_value_get_object (&val);
         if (element && !GST_IS_BIN(element)) {
-          GstElementClass *ec = GST_ELEMENT_GET_CLASS(element);
+          const gchar *name = g_type_name(G_OBJECT_TYPE(element));
 
-          if (ec) {
-            gchar *name = gst_element_get_name (element);
-
-            if (strstr(name, "amlhalasink")) {
-              found = TRUE;
-              GST_INFO ("detected audio sink: name (%s)", name);
-              g_free (name);
-              g_value_reset (&val);
-              break;
-            }
+          if (name && !strcmp(name, "GstAmlHalAsink")) {
+            found = TRUE;
+            GST_INFO ("detected audio sink %s", name);
+            g_value_reset (&val);
+            break;
           }
         }
         g_value_reset (&val);
