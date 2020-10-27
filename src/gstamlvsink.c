@@ -1174,15 +1174,6 @@ static gpointer video_decode_thread(gpointer data)
       continue;
     }
 
-    /* pause logic */
-    if (priv->avsync_paused && !priv->paused) {
-      display_set_pause (priv->render, false);
-      priv->avsync_paused = false;
-    } else if (!priv->avsync_paused && priv->paused) {
-      display_set_pause (priv->render, true);
-      priv->avsync_paused = true;
-    }
-
     if (cb->buf.flags & V4L2_BUF_FLAG_LAST) {
       GST_WARNING_OBJECT (sink, "get last frame");
       continue;
@@ -1194,6 +1185,15 @@ static gpointer video_decode_thread(gpointer data)
       v4l_queue_capture_buffer (priv->fd, cb);
       continue;
     }
+
+    /* pause logic after start segment check*/
+    GST_OBJECT_LOCK (sink);
+    if (!priv->avsync_paused && priv->paused) {
+      display_set_pause (priv->render, true);
+      priv->avsync_paused = true;
+    }
+    GST_OBJECT_UNLOCK (sink);
+
 
     priv->position = priv->segment.start + (frame_ts - priv->first_ts);
 
@@ -1695,7 +1695,13 @@ gst_aml_vsink_change_state (GstElement * element,
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
     {
       GST_INFO_OBJECT(sink, "paused to playing");
+      GST_OBJECT_LOCK (sink);
       priv->paused = FALSE;
+      if (priv->avsync_paused) {
+        display_set_pause (priv->render, false);
+        priv->avsync_paused = false;
+      }
+      GST_OBJECT_UNLOCK (sink);
       break;
     }
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
