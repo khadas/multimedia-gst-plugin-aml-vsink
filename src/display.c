@@ -192,9 +192,12 @@ void display_engine_stop(void *handle)
   int rc;
 
   disp->started = false;
-  rc = pthread_join (disp->disp_t, NULL);
-  if (rc)
-    GST_ERROR ("join display thread %d", errno);
+  if (disp->disp_t) {
+    rc = pthread_join (disp->disp_t, NULL);
+    if (rc)
+      GST_ERROR ("join display thread %d", errno);
+    disp->disp_t = NULL;
+  }
 
   if (disp->avsync)
     av_sync_destroy (disp->avsync);

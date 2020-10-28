@@ -1637,8 +1637,10 @@ static void reset_decoder(GstAmlVsink *sink)
   priv->capture_port_config = FALSE;
   pthread_mutex_unlock (&priv->res_lock);
 
-  g_thread_join (priv->videoOutputThread);
-  priv->videoOutputThread = NULL;
+  if (priv->videoOutputThread) {
+    g_thread_join (priv->videoOutputThread);
+    priv->videoOutputThread = NULL;
+  }
 
   GST_INFO_OBJECT (sink, "decoder reset");
 }
