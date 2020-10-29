@@ -48,10 +48,12 @@ struct drm_frame {
 };
 
 typedef int (*displayed_cb_func)(void* priv, void* handle);
+typedef int (*pause_cb_func)(void* priv, uint32_t pts);
 
 void* display_engine_start(void * priv);
 void display_engine_stop(void * handle);
 int display_engine_register_cb(displayed_cb_func cb);
+int pause_pts_register_cb(pause_cb_func cb);
 
 struct drm_frame* display_create_buffer(void *handle,
         unsigned int width, unsigned int height,
@@ -63,4 +65,5 @@ int display_start_avsync(void *handle, enum sync_mode mode);
 void display_stop_avsync(void *handle);
 
 int display_set_pause(void *handle, bool pause);
+int display_set_pause_pts(void *handle, uint32_t pause_pts);
 #endif

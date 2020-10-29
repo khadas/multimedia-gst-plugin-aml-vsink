@@ -45,6 +45,7 @@ GST_DEBUG_CATEGORY (gst_aml_vsink_debug);
 
 struct _GstAmlVsinkPrivate
 {
+  GstAmlVsink* sink;
   gboolean paused;
   gboolean flushing_;
   gboolean received_eos;
@@ -112,6 +113,9 @@ struct _GstAmlVsinkPrivate
   uint32_t coded_w;
   uint32_t coded_h;
 
+  /* pause PTS */
+  uint32_t pause_pts;
+
   /* HDR */
   struct hdr_meta hdr;
 
@@ -131,6 +135,7 @@ enum
   PROP_PIP_VIDEO,
   PROP_VIDEO_FRAME_DROP_NUM,
   PROP_VIDEO_DW_MODE,
+  PROP_PAUSE_PTS,
   PROP_LAST
 };
 
@@ -152,6 +157,7 @@ G_DEFINE_TYPE_WITH_CODE (GstAmlVsink, gst_aml_vsink, GST_TYPE_BASE_SINK,
 enum
 {
   SIGNAL_FIRSTFRAME,
+  SIGNAL_PAUSEPTS,
   MAX_SIGNAL
 };
 static guint g_signals[MAX_SIGNAL]= {0};
@@ -179,6 +185,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps);
 static void reset_decoder(GstAmlVsink *sink);
 static gboolean check_vdec(GstAmlVsinkClass *klass);
 int capture_buffer_recycle(void* priv_data, void* handle);
+static int pause_pts_arrived(void* priv, uint32_t pts);
 //static int get_sysfs_uint32(const char *path, uint32_t *value);
 //static int config_sys_node(const char* path, const char* value);
 #define DUMP_TO_FILE
@@ -234,6 +241,11 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
         "0/1/2/4/16 Only 16 is valid for h264/mepg2.",
         0, 16, 0, G_PARAM_WRITABLE));
 
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_PAUSE_PTS,
+      g_param_spec_uint ("pause-pts", "pause pts",
+        "rendering paused on a pts value of 90KHz, signal triggered, set it in READY state",
+        0, G_MAXUINT, 0, G_PARAM_WRITABLE));
+
   g_signals[SIGNAL_FIRSTFRAME]= g_signal_new( "first-video-frame-callback",
       G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
       (GSignalFlags) (G_SIGNAL_RUN_LAST),
@@ -245,6 +257,17 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
       2,
       G_TYPE_UINT,
       G_TYPE_POINTER );
+
+  g_signals[SIGNAL_PAUSEPTS]= g_signal_new( "pause-pts-callback",
+      G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
+      (GSignalFlags) (G_SIGNAL_RUN_LAST),
+      0,    /* class offset */
+      NULL, /* accumulator */
+      NULL, /* accu data */
+      g_cclosure_marshal_VOID__UINT_POINTER,
+      G_TYPE_NONE,
+      1,
+      G_TYPE_UINT);
 
   gstelement_class->change_state =
       GST_DEBUG_FUNCPTR (gst_aml_vsink_change_state);
@@ -401,6 +424,7 @@ gst_aml_vsink_init (GstAmlVsink* sink)
 #endif
 
   sink->priv = priv;
+  priv->sink = sink;
   basesink = GST_BASE_SINK_CAST (sink);
   /* bypass sync control of basesink */
   gst_base_sink_set_sync (basesink, FALSE);
@@ -411,6 +435,7 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->received_eos = FALSE;
   priv->group_id = -1;
   priv->fd = -1;
+  priv->pause_pts = -1;
 }
 
 static void
@@ -459,8 +484,6 @@ gst_aml_vsink_query (GstElement * element, GstQuery * query)
   return res;
 }
 
-
-
 static void
 gst_aml_vsink_set_property (GObject * object, guint property_id,
     const GValue * value, GParamSpec * pspec)
@@ -469,6 +492,12 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
   GstAmlVsinkPrivate *priv = sink->priv;
 
   switch (property_id) {
+  case PROP_PAUSE_PTS:
+  {
+    priv->pause_pts = g_value_get_uint (value);
+    GST_WARNING_OBJECT (sink, "pause PTS %u", priv->pause_pts);
+    break;
+  }
   case PROP_VIDEO_DW_MODE:
   {
     int mode = g_value_get_int (value);
@@ -540,6 +569,11 @@ static void gst_aml_vsink_get_property (GObject * object, guint property_id,
   GstAmlVsinkPrivate *priv = sink->priv;
 
   switch (property_id) {
+  case PROP_PAUSE_PTS:
+  {
+    g_value_set_uint(value, priv->pause_pts);
+    break;
+  }
   case PROP_VIDEO_FRAME_DROP_NUM:
     g_value_set_int(value, priv->dropped_frame_num);
     break;
@@ -1597,6 +1631,10 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
     goto error;
   }
   display_engine_register_cb(capture_buffer_recycle);
+  pause_pts_register_cb(pause_pts_arrived);
+
+  if (priv->pause_pts != -1)
+    display_set_pause_pts (priv->render, priv->pause_pts);
 
   priv->paused = TRUE;
   priv->avsync_paused = FALSE;
@@ -1781,6 +1819,16 @@ int capture_buffer_recycle(void* priv_data, void* handle)
 exit:
   pthread_mutex_unlock (&priv->res_lock);
   return ret;
+}
+
+static int pause_pts_arrived(void* handle, uint32_t pts)
+{
+  GstAmlVsinkPrivate *priv = handle;
+  GstAmlVsink *sink = priv->sink;
+
+  GST_WARNING_OBJECT (sink, "emit pause pts signal %u", pts);
+  g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_PAUSEPTS], pts, NULL);
+  return 0;
 }
 
 #if 0
