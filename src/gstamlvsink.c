@@ -318,6 +318,12 @@ static gboolean build_caps(GstAmlVsinkClass*klass, struct v4l2_fmtdesc *formats,
           "video/x-h265(memory:DMABuf) ; "
           );
       break;
+    case V4L2_PIX_FMT_AV1:
+      tmp = gst_caps_from_string(
+          "video/x-av1; " \
+          "video/x-av1(memory:DMABuf) ; "
+          );
+      break;
     default:
       break;
     }
@@ -585,6 +591,8 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
     priv->output_format = V4L2_PIX_FMT_HEVC;
   else if (len == 11 && !strncmp ("video/x-vp9", mime, len))
     priv->output_format = V4L2_PIX_FMT_VP9;
+  else if (len == 11 && !strncmp ("video/x-av1", mime, len))
+    priv->output_format = V4L2_PIX_FMT_AV1;
 
   if (priv->output_format == -1) {
     GST_ERROR("not accepting format(%s)", mime );
