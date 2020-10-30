@@ -1242,7 +1242,7 @@ static gpointer video_decode_thread(gpointer data)
     GST_LOG_OBJECT (sink, "frame %lld position %lld", frame_ts, priv->position);
 
     if (priv->out_frame_cnt == 0) {
-      GST_DEBUG("emit first frame signal");
+      GST_WARNING_OBJECT (sink, "emit first frame signal");
       g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_FIRSTFRAME], 0, 2, NULL);
     }
 
@@ -1394,7 +1394,11 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
 
   if (GST_BUFFER_PTS_IS_VALID(buf)) {
     if (!priv->first_ts_set) {
-      priv->first_ts = GST_BUFFER_PTS (buf);
+      GST_INFO_OBJECT (sink, "first ts %lld", GST_BUFFER_PTS (buf));
+      if (priv->segment.start)
+        priv->first_ts = GST_BUFFER_PTS (buf);
+      else
+        priv->first_ts = 0;
       priv->first_ts_set = true;
     }
   }
