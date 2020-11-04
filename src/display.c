@@ -106,13 +106,14 @@ static void pause_pts_cb(uint32_t pts, void* priv)
   disp->pause_pts = -1;
 }
 
-int display_start_avsync(void *handle, enum sync_mode mode)
+int display_start_avsync(void *handle, enum sync_mode mode, bool pip)
 {
   struct video_disp * disp = handle;
+  int session = pip ? 1 : 0;
 
   log_set_level (LOG_INFO);
   //TODO get correct refresh rate through display_res_change_cb
-  disp->avsync = av_sync_create(0, mode, 2, 2, 90000/60);
+  disp->avsync = av_sync_create(session, mode, 2, 2, 90000/60);
   if (!disp->avsync) {
     GST_ERROR ("create avsync fails\n");
     return -1;

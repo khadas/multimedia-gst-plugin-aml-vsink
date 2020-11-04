@@ -1176,7 +1176,7 @@ static gpointer video_decode_thread(gpointer data)
     else
       GST_INFO ("no amlhalasink in pipeline");
 
-    rc = display_start_avsync (priv->render, priv->avsync_mode);
+    rc = display_start_avsync (priv->render, priv->avsync_mode, priv->pip);
     if (rc) {
       GST_ERROR ("start avsync error");
       goto exit;
