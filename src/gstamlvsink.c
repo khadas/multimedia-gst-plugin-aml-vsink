@@ -185,7 +185,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps);
 
 static void reset_decoder(GstAmlVsink *sink);
 static gboolean check_vdec(GstAmlVsinkClass *klass);
-int capture_buffer_recycle(void* priv_data, void* handle);
+static int capture_buffer_recycle(void* priv_data, void* handle);
 static int pause_pts_arrived(void* priv, uint32_t pts);
 //static int get_sysfs_uint32(const char *path, uint32_t *value);
 //static int config_sys_node(const char* path, const char* value);
@@ -1058,7 +1058,9 @@ static void handle_v4l_event (GstAmlVsink *sink)
     }
   } else if (event.type == V4L2_EVENT_EOS) {
     GST_WARNING_OBJECT (sink, "V4L EOS");
+    pthread_mutex_lock (&priv->res_lock);
     priv->eos = TRUE;
+    pthread_mutex_unlock (&priv->res_lock);
   }
 exit:
   GST_OBJECT_UNLOCK (sink);
@@ -1269,8 +1271,13 @@ static gpointer video_decode_thread(gpointer data)
     cb->drm_frame->pri_dec = cb;
     cb->drm_frame->pts = gst_util_uint64_scale_int (frame_ts, PTS_90K, GST_SECOND);
     //TODO: handle scale_set in drm
-    display_engine_show (priv->render, cb->drm_frame, &priv->window);
-    cb->displayed = true;
+    rc = display_engine_show (priv->render, cb->drm_frame, &priv->window);
+    if (rc)
+      GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
+    else {
+      cb->displayed = true;
+      GST_DEBUG_OBJECT (sink, "cb index %d to display", cb->id);
+    }
   }
 
 exit:
@@ -1695,15 +1702,15 @@ static void reset_decoder(GstAmlVsink *sink)
     GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",ret);
   }
 
-  pthread_mutex_lock (&priv->res_lock);
-  recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
-  priv->capture_port_config = FALSE;
-  pthread_mutex_unlock (&priv->res_lock);
-
   if (priv->videoOutputThread) {
     g_thread_join (priv->videoOutputThread);
     priv->videoOutputThread = NULL;
   }
+
+  pthread_mutex_lock (&priv->res_lock);
+  recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
+  priv->capture_port_config = FALSE;
+  pthread_mutex_unlock (&priv->res_lock);
 
   GST_INFO_OBJECT (sink, "decoder reset");
 }
@@ -1801,7 +1808,7 @@ gst_aml_vsink_change_state (GstElement * element,
   return ret;
 }
 
-int capture_buffer_recycle(void* priv_data, void* handle)
+static int capture_buffer_recycle(void* priv_data, void* handle)
 {
   int ret = 0;
   struct capture_buffer *frame = handle;
@@ -1820,18 +1827,22 @@ int capture_buffer_recycle(void* priv_data, void* handle)
     GST_DEBUG ("free index %d\n", frame->buf.index);
     frame->drm_frame->destroy(frame->drm_frame);
     free(frame);
-    pthread_mutex_unlock (&priv->res_lock);
     goto exit;
   }
 
-  if (priv->eos || priv->fd < 0 || !priv->capture_port_config) {
-    pthread_mutex_unlock (&priv->res_lock);
+  if (priv->fd < 0 || !priv->capture_port_config) {
+    GST_WARNING ("free index %d in wrong state fd %d configed %d", frame->buf.index,
+        priv->fd, priv->capture_port_config);
+    frame->drm_frame->destroy(frame->drm_frame);
+    free(frame);
     goto exit;
   }
 
   ret = v4l_queue_capture_buffer(priv->fd, frame);
   if (ret) {
-    GST_ERROR ("queue cap fail %d", frame->id);
+    GST_ERROR ("queue cb fail %d", frame->id);
+  } else {
+    GST_DEBUG ("queue cb index %d", frame->id);
   }
 
 exit:

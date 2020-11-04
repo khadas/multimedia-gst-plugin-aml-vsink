@@ -356,7 +356,7 @@ static void * display_thread_func(void * arg)
         GST_ERROR ("drm_post_buf error %d", rc);
         continue;
       }
-      /* 2 fence delay on video layer, 1 fence delay on osd */
+      /* 2 fences delay on video layer, 1 fence delay on osd */
       if (f_p3) {
         f_p3->displayed = true;
         display_cb(disp->priv, f_p3->pri_dec);
