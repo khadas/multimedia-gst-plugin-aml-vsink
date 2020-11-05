@@ -272,8 +272,9 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
       NULL, /* accu data */
       g_cclosure_marshal_VOID__UINT_POINTER,
       G_TYPE_NONE,
-      1,
-      G_TYPE_UINT);
+      2,
+      G_TYPE_UINT,
+      G_TYPE_POINTER);
 
   gstelement_class->change_state =
       GST_DEBUG_FUNCPTR (gst_aml_vsink_change_state);
@@ -1856,7 +1857,7 @@ static int pause_pts_arrived(void* handle, uint32_t pts)
   GstAmlVsink *sink = priv->sink;
 
   GST_WARNING_OBJECT (sink, "emit pause pts signal %u", pts);
-  g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_PAUSEPTS], pts, NULL);
+  g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_PAUSEPTS], 0, pts, NULL);
   return 0;
 }
 
