@@ -350,7 +350,13 @@ static void * display_thread_func(void * arg)
     if (f != f_p1) {
       GST_DEBUG ("pop frame: %u", f->pts);
       gem_buf = f->buf;
-      //TODO set gem_buf window
+
+      //set gem_buf window
+      gem_buf->crtc_x = f->window.x;
+      gem_buf->crtc_y = f->window.y;
+      gem_buf->crtc_w = f->window.w;
+      gem_buf->crtc_h = f->window.h;
+
       rc = drm_post_buf (disp->drm, gem_buf);
       if (rc) {
         GST_ERROR ("drm_post_buf error %d", rc);

@@ -554,7 +554,6 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
           (ny != priv->window.y) ||
           (nw != priv->window.w) ||
           (nh != priv->window.h) ) {
-        //TODO: lock logic
         GST_OBJECT_LOCK ( sink );
         priv->scale_set = true;
         priv->window.x = nx;
@@ -564,7 +563,6 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
         GST_OBJECT_UNLOCK ( sink );
 
         GST_WARNING ("set window rect (%d,%d,%d,%d)\n", nx, ny, nw, nh);
-        //TODO: set scaling here
       }
     }
     g_strfreev(parts);
@@ -1271,7 +1269,6 @@ static gpointer video_decode_thread(gpointer data)
 
     cb->drm_frame->pri_dec = cb;
     cb->drm_frame->pts = gst_util_uint64_scale_int (frame_ts, PTS_90K, GST_SECOND);
-    //TODO: handle scale_set in drm
     rc = display_engine_show (priv->render, cb->drm_frame, &priv->window);
     if (rc)
       GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
