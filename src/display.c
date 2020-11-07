@@ -48,6 +48,10 @@ struct video_disp {
   pthread_mutex_t avsync_lock;
   uint32_t pause_pts;
   struct drm_frame *black_frame;
+
+  /* trick play */
+  bool speed_pending;
+  float speed;
 };
 
 static struct drm_frame* create_black_frame (void* handle,
@@ -113,11 +117,18 @@ int display_start_avsync(void *handle, enum sync_mode mode, bool pip)
 
   log_set_level (LOG_INFO);
   //TODO get correct refresh rate through display_res_change_cb
+  pthread_mutex_lock (&disp->avsync_lock);
   disp->avsync = av_sync_create(session, mode, 2, 2, 90000/60);
   if (!disp->avsync) {
+    pthread_mutex_unlock (&disp->avsync_lock);
     GST_ERROR ("create avsync fails\n");
     return -1;
   }
+  if (disp->speed_pending) {
+    disp->speed_pending = false;
+    av_sync_set_speed (disp->avsync, disp->speed);
+  }
+  pthread_mutex_unlock (&disp->avsync_lock);
 
   if (disp->pause_pts != -1) {
     av_sync_set_pause_pts_cb (disp->avsync, pause_pts_cb, disp);
@@ -135,6 +146,7 @@ void display_stop_avsync(void *handle)
     av_sync_destroy (disp->avsync);
     disp->avsync = NULL;
   }
+  disp->speed_pending = false;
   pthread_mutex_unlock (&disp->avsync_lock);
 }
 
@@ -295,7 +307,7 @@ void display_engine_stop(void *handle)
     rc = pthread_join (disp->disp_t, NULL);
     if (rc)
       GST_ERROR ("join display thread %d", errno);
-    disp->disp_t = NULL;
+    disp->disp_t = 0;
   }
 
   if (disp->avsync)
@@ -477,4 +489,21 @@ int display_show_black_frame(void * handle)
   struct video_disp *disp = handle;
 
   return drm_post_buf (disp->drm, disp->black_frame->buf);
+}
+
+int display_set_speed(void *handle, float speed)
+{
+  struct video_disp *disp = handle;
+
+  pthread_mutex_lock (&disp->avsync_lock);
+  if (disp->avsync) {
+    pthread_mutex_unlock (&disp->avsync_lock);
+    return av_sync_set_speed (disp->avsync, speed);
+  } else {
+    disp->speed_pending = true;
+    disp->speed = speed;
+  }
+  pthread_mutex_unlock (&disp->avsync_lock);
+
+  return 0;
 }

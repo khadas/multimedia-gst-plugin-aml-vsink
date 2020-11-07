@@ -68,4 +68,5 @@ int display_show_black_frame(void * handle);
 
 int display_set_pause(void *handle, bool pause);
 int display_set_pause_pts(void *handle, uint32_t pause_pts);
+int display_set_speed(void *handle, float speed);
 #endif

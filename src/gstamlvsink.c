@@ -124,6 +124,9 @@ struct _GstAmlVsinkPrivate
   int out_frame_cnt;
   int dropped_frame_num;
 
+  /* trick play */
+  gfloat rate;
+
   /* lock */
   pthread_mutex_t res_lock;
 };
@@ -881,14 +884,25 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
     }
     case GST_EVENT_SEGMENT:
     {
-      gst_event_copy_segment (event, &priv->segment);
+      GstSegment segment;
+      gst_event_copy_segment (event, &segment);
       GST_INFO_OBJECT (sink, "configured segment %" GST_SEGMENT_FORMAT,
-          &priv->segment);
+          &segment);
 
-      /* prepare for trick play */
-      if (priv->segment.rate != 1 && priv->segment.rate != 0) {
-        //TODO: trickplay
+      if (segment.start == GST_CLOCK_TIME_NONE) {
+        /* trick play */
+        priv->rate = segment.rate;
+        display_set_speed (priv->render, priv->rate);
+        GST_INFO_OBJECT (sink, "speed %f", priv->rate);
+      } else {
+        if (priv->segment.rate != 0.0 && segment.rate != priv->segment.rate) {
+          GST_INFO_OBJECT (sink, "ignore rate %f keep %f", segment.rate, priv->segment.rate);
+          segment.rate = priv->segment.rate;
+        }
+        priv->segment = segment;
+        priv->rate = priv->segment.rate;
       }
+
       break;
     }
     case GST_EVENT_STREAM_START:
@@ -1256,7 +1270,7 @@ static gpointer video_decode_thread(gpointer data)
     GST_LOG_OBJECT (sink, "frame %lld position %lld", frame_ts, priv->position);
 
     if (priv->out_frame_cnt == 0) {
-      GST_WARNING_OBJECT (sink, "emit first frame signal");
+      GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld", frame_ts);
       g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_FIRSTFRAME], 0, 2, NULL);
     }
 
