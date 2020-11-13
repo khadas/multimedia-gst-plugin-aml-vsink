@@ -313,9 +313,9 @@ void display_engine_stop(void *handle)
   if (disp->avsync)
     av_sync_destroy (disp->avsync);
 
+  destroy_black_frame (disp->black_frame);
   drm_destroy_display (disp->drm);
   pthread_mutex_destroy (&disp->avsync_lock);
-  destroy_black_frame (disp->black_frame);
   free (disp);
 }
 
@@ -488,6 +488,7 @@ int display_show_black_frame(void * handle)
 {
   struct video_disp *disp = handle;
 
+  GST_INFO ("show black frame");
   return drm_post_buf (disp->drm, disp->black_frame->buf);
 }
 
