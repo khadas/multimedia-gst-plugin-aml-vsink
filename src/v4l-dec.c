@@ -508,8 +508,10 @@ void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t n
         continue;
       }
       if (!cb[i]->displayed) {
-        cb[i]->drm_frame->destroy(cb[i]->drm_frame);
-        GST_DEBUG ("free index %d", i);
+        if (cb[i]->drm_frame) {
+          cb[i]->drm_frame->destroy(cb[i]->drm_frame);
+          GST_DEBUG ("free index %d", i);
+        }
         free (cb[i]);
         cb [i] = NULL;
       } else {
