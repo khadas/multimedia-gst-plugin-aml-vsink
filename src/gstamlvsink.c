@@ -123,6 +123,7 @@ struct _GstAmlVsinkPrivate
   int in_frame_cnt;
   int out_frame_cnt;
   int dropped_frame_num;
+  int rendered_frame_num;
 
   /* trick play */
   gfloat rate;
@@ -590,8 +591,27 @@ static void gst_aml_vsink_get_property (GObject * object, guint property_id,
     break;
   }
   case PROP_VIDEO_FRAME_DROP_NUM:
-    g_value_set_int(value, priv->dropped_frame_num);
+  {
+    /* do this work around before VMASTER mode is supported */
+    gint64 dur_ms = (priv->position - priv->first_ts)/1000000LL;
+    int frameCount = priv->rendered_frame_num + priv->dropped_frame_num;
+    int dropped;
+    gfloat framerate;
+
+    if (dur_ms)
+      framerate = (gfloat)frameCount*1000/ (gfloat)dur_ms;
+    else
+      framerate = 30.0;
+
+
+    if (priv->rate > 1 && framerate > 45.0 && frameCount > 30) {
+      dropped = frameCount - (int)(frameCount/priv->rate);
+    } else {
+      dropped = 0;
+    }
+    g_value_set_int(value, dropped);
     break;
+  }
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
     break;
@@ -1316,6 +1336,7 @@ static int start_video_thread (GstAmlVsink * sink)
 
   priv->out_frame_cnt = 0;
   priv->dropped_frame_num = 0;
+  priv->rendered_frame_num = 0;
 
   priv->quitVideoOutputThread = FALSE;
   if (!priv->videoOutputThread) {
@@ -1833,6 +1854,8 @@ static int capture_buffer_recycle(void* priv_data, void* handle)
 
   if (!frame->drm_frame->displayed)
     priv->dropped_frame_num++;
+  else
+    priv->rendered_frame_num++;
 
   pthread_mutex_lock (&priv->res_lock);
   if (frame->free_on_recycle) {
