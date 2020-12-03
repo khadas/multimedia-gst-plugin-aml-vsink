@@ -472,7 +472,7 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
       GST_ERROR ("VIDIOC_QBUF cap %d error", i);
       goto exit;
     }
-    GST_DEBUG ("queue cb %d", i);
+    GST_LOG ("queue cb %d", i);
   }
 
   *buf_cnt = cnt;

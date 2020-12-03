@@ -266,7 +266,7 @@ struct drm_frame* display_create_buffer(void* handle,
   else
     info.flags |= MESON_USE_VD2;
 
-  GST_DEBUG ("create buffer %dx%d fmt %d flag %x", width, height,
+  GST_LOG ("create buffer %dx%d fmt %d flag %x", width, height,
       info.fourcc, info.flags);
 
   gem_buf = drm_alloc_buf(disp->drm, &info);
@@ -361,7 +361,7 @@ static void * display_thread_func(void * arg)
     }
 
     if (f != f_p1) {
-      GST_DEBUG ("pop frame: %u", f->pts);
+      GST_LOG ("pop frame: %u", f->pts);
       gem_buf = f->buf;
 
       //set gem_buf window
@@ -452,7 +452,7 @@ int display_engine_show(void* handle, struct drm_frame* frame, struct rect* wind
     } else
       break;
   }
-  GST_DEBUG ("push frame: %u", sync_frame->pts);
+  GST_LOG ("push frame: %u", sync_frame->pts);
 
   return 0;
 }

@@ -456,6 +456,7 @@ gst_aml_vsink_dispose (GObject * object)
   GstAmlVsink* sink = GST_AML_VSINK(object);
   GstAmlVsinkPrivate *priv = sink->priv;
 
+  GST_INFO_OBJECT(sink, "dispose");
   pthread_mutex_destroy (&priv->res_lock);
   G_OBJECT_CLASS (parent_class)->dispose (object);
 }
@@ -1308,7 +1309,7 @@ static gpointer video_decode_thread(gpointer data)
       GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
     else {
       cb->displayed = true;
-      GST_DEBUG_OBJECT (sink, "cb index %d to display", cb->id);
+      GST_LOG_OBJECT (sink, "cb index %d to display", cb->id);
     }
   }
 
@@ -1529,7 +1530,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
         goto exit;
       }
       ob->queued = true;
-      GST_DEBUG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copylen, GST_BUFFER_PTS(buf));
+      GST_LOG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copylen, GST_BUFFER_PTS(buf));
 #ifdef DUMP_TO_FILE
       if (getenv("AML_VSINK_ES_DUMP"))
         dump ("/data/amlvsink", inData, copylen,
@@ -1820,6 +1821,7 @@ gst_aml_vsink_change_state (GstElement * element,
     {
       GST_INFO_OBJECT(sink, "paused to ready");
       pause_to_ready (sink);
+      GST_INFO_OBJECT(sink, "paused to ready done");
       break;
     }
     default:
@@ -1859,7 +1861,7 @@ static int capture_buffer_recycle(void* priv_data, void* handle)
 
   pthread_mutex_lock (&priv->res_lock);
   if (frame->free_on_recycle) {
-    GST_DEBUG ("free index %d\n", frame->buf.index);
+    GST_LOG ("free index %d\n", frame->buf.index);
     frame->drm_frame->destroy(frame->drm_frame);
     free(frame);
     goto exit;
@@ -1877,7 +1879,7 @@ static int capture_buffer_recycle(void* priv_data, void* handle)
   if (ret) {
     GST_ERROR ("queue cb fail %d", frame->id);
   } else {
-    GST_DEBUG ("queue cb index %d", frame->id);
+    GST_LOG ("queue cb index %d", frame->id);
   }
 
 exit:
