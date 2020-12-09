@@ -310,8 +310,12 @@ void display_engine_stop(void *handle)
     disp->disp_t = 0;
   }
 
-  if (disp->avsync)
+  pthread_mutex_lock (&disp->avsync_lock);
+  if (disp->avsync) {
     av_sync_destroy (disp->avsync);
+    disp->avsync = NULL;
+  }
+  pthread_mutex_unlock (&disp->avsync_lock);
 
   destroy_black_frame (disp->black_frame);
   drm_destroy_display (disp->drm);

@@ -805,14 +805,19 @@ static gpointer video_eos_thread(gpointer data)
 {
   GstAmlVsink * sink = data;
   GstAmlVsinkPrivate *priv = sink->priv;
+  uint32_t count = 3000; //30s timeout
 
   prctl (PR_SET_NAME, "aml_eos_t");
   GST_INFO ("enter");
+
   while (!priv->quit_eos_wait) {
     usleep (10000);
-    if (priv->eos) {
+    count--;
+    if (priv->eos || !count) {
       GstMessage * message;
 
+      if (!count)
+        GST_WARNING_OBJECT (sink, "EOS timeout");
       GST_WARNING_OBJECT (sink, "Posting EOS");
       message = gst_message_new_eos (GST_OBJECT_CAST (sink));
       gst_message_set_seqnum (message, priv->seqnum);
@@ -820,6 +825,7 @@ static gpointer video_eos_thread(gpointer data)
       break;
     }
   }
+exit:
   GST_INFO ("quit");
   return NULL;
 }
@@ -840,11 +846,15 @@ static int stop_eos_thread (GstAmlVsink *sink)
 {
   GstAmlVsinkPrivate *priv = sink->priv;
 
+  GST_OBJECT_LOCK (sink);
+  priv->quit_eos_wait = TRUE;
   if (priv->eos_wait_thread) {
-    priv->quit_eos_wait = TRUE;
+    GST_OBJECT_UNLOCK (sink);
     g_thread_join (priv->eos_wait_thread);
     priv->eos_wait_thread = NULL;
+    return 0;
   }
+  GST_OBJECT_UNLOCK (sink);
   return 0;
 }
 
@@ -871,13 +881,20 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
 
       GST_OBJECT_LOCK (sink);
       /* flush decoder */
+      if (priv->fd == -1) {
+        GST_OBJECT_UNLOCK (sink);
+        break;
+      }
+
       ret = ioctl(priv->fd, VIDIOC_DECODER_CMD, &cmd);
-      if (ret)
+      if (ret) {
         GST_ERROR_OBJECT (sink, "V4L2_DEC_CMD_STOP output fail %d",errno);
+        GST_OBJECT_UNLOCK (sink);
+        break;
+      }
+
+      start_eos_thread (sink);
       GST_OBJECT_UNLOCK (sink);
-
-      result = start_eos_thread (sink);
-
       break;
     }
     case GST_EVENT_FLUSH_START:
@@ -1696,6 +1713,7 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
 
   priv->paused = TRUE;
   priv->avsync_paused = FALSE;
+  priv->quit_eos_wait = FALSE;
 
   return GST_STATE_CHANGE_SUCCESS;
 error:
@@ -1767,13 +1785,13 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
   pthread_mutex_unlock (&priv->res_lock);
   GST_OBJECT_UNLOCK (sink);
 
-  display_engine_stop (priv->render);
-  priv->render = NULL;
   stop_eos_thread (sink);
-
   GST_OBJECT_LOCK (sink);
   vsink_reset (sink);
   GST_OBJECT_UNLOCK (sink);
+
+  display_engine_stop (priv->render);
+  priv->render = NULL;
 
   return GST_STATE_CHANGE_SUCCESS;
 }
