@@ -1533,9 +1533,9 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       GST_LOG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copylen, GST_BUFFER_PTS(buf));
 #ifdef DUMP_TO_FILE
       if (getenv("AML_VSINK_ES_DUMP"))
-        dump ("/data/amlvsink", inData, copylen,
+        dump ("/tmp/amlvsink", inData, copylen,
             priv->output_format == V4L2_PIX_FMT_VP9,
-            priv->in_frame_cnt == 0);
+            priv->in_frame_cnt);
 #endif
     }
     gst_buffer_unmap (buf, &map);
