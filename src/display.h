@@ -48,7 +48,7 @@ struct drm_frame {
   struct rect window;
 };
 
-typedef int (*displayed_cb_func)(void* priv, void* handle);
+typedef int (*displayed_cb_func)(void* priv, void* handle, bool displayed);
 typedef int (*pause_cb_func)(void* priv, uint32_t pts);
 
 void *display_engine_start(void* priv, bool pip);

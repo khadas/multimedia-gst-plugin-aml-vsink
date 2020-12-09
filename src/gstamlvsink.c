@@ -189,7 +189,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps);
 
 static void reset_decoder(GstAmlVsink *sink);
 static gboolean check_vdec(GstAmlVsinkClass *klass);
-static int capture_buffer_recycle(void* priv_data, void* handle);
+static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed);
 static int pause_pts_arrived(void* priv, uint32_t pts);
 //static int get_sysfs_uint32(const char *path, uint32_t *value);
 //static int config_sys_node(const char* path, const char* value);
@@ -825,7 +825,6 @@ static gpointer video_eos_thread(gpointer data)
       break;
     }
   }
-exit:
   GST_INFO ("quit");
   return NULL;
 }
@@ -1301,11 +1300,6 @@ static gpointer video_decode_thread(gpointer data)
       priv->avsync_paused = true;
     }
     GST_OBJECT_UNLOCK (sink);
-
-
-    priv->position = priv->segment.start + (frame_ts - priv->first_ts);
-
-    GST_LOG_OBJECT (sink, "frame %lld position %lld", frame_ts, priv->position);
 
     if (priv->out_frame_cnt == 0) {
       GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld", frame_ts);
@@ -1861,8 +1855,9 @@ gst_aml_vsink_change_state (GstElement * element,
   return ret;
 }
 
-static int capture_buffer_recycle(void* priv_data, void* handle)
+static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed)
 {
+  gint64 frame_ts;
   int ret = 0;
   struct capture_buffer *frame = handle;
   GstAmlVsinkPrivate *priv = priv_data;
@@ -1891,6 +1886,12 @@ static int capture_buffer_recycle(void* priv_data, void* handle)
     frame->drm_frame->destroy(frame->drm_frame);
     free(frame);
     goto exit;
+  }
+
+  if (displayed) {
+    frame_ts = GST_TIMEVAL_TO_TIME(frame->buf.timestamp);
+    priv->position = priv->segment.start + (frame_ts - priv->first_ts);
+    GST_LOG ("frame %lld position %lld", frame_ts, priv->position);
   }
 
   ret = v4l_queue_capture_buffer(priv->fd, frame);

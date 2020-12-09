@@ -118,7 +118,7 @@ int display_start_avsync(void *handle, enum sync_mode mode, bool pip)
   log_set_level (LOG_INFO);
   //TODO get correct refresh rate through display_res_change_cb
   pthread_mutex_lock (&disp->avsync_lock);
-  disp->avsync = av_sync_create(session, mode, 2, 2, 90000/60);
+  disp->avsync = av_sync_create(session, mode, 2, 1, 90000/60);
   if (!disp->avsync) {
     pthread_mutex_unlock (&disp->avsync_lock);
     GST_ERROR ("create avsync fails\n");
@@ -382,7 +382,7 @@ static void * display_thread_func(void * arg)
       /* 2 fences delay on video layer, 1 fence delay on osd */
       if (f_p3) {
         f_p3->displayed = true;
-        display_cb(disp->priv, f_p3->pri_dec);
+        display_cb(disp->priv, f_p3->pri_dec, true);
         f_p3 = NULL;
       }
 
@@ -394,11 +394,11 @@ static void * display_thread_func(void * arg)
   }
 
   if (f_p3)
-    display_cb(disp->priv, f_p3->pri_dec);
+    display_cb(disp->priv, f_p3->pri_dec, false);
   if (f_p2)
-    display_cb(disp->priv, f_p2->pri_dec);
+    display_cb(disp->priv, f_p2->pri_dec, false);
   if (f_p1)
-    display_cb(disp->priv, f_p1->pri_dec);
+    display_cb(disp->priv, f_p1->pri_dec, false);
 
   GST_INFO ("quit %s\n", __func__);
   return NULL;
@@ -416,7 +416,7 @@ static void sync_frame_free(struct vframe * sync_frame)
 
   if (drm_f) {
     drm_f->displayed = false;
-    display_cb(disp->priv, drm_f->pri_dec);
+    display_cb(disp->priv, drm_f->pri_dec, false);
   } else
     disp->last_frame = true;
 }
