@@ -1543,10 +1543,14 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       ob->queued = true;
       GST_LOG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copylen, GST_BUFFER_PTS(buf));
 #ifdef DUMP_TO_FILE
-      if (getenv("AML_VSINK_ES_DUMP"))
+      if (getenv("AML_VSINK_ES_DUMP")) {
+        uint32_t pts32;
+        pts32 = gst_util_uint64_scale_int (GST_BUFFER_PTS(buf), PTS_90K, GST_SECOND);
         dump ("/tmp/amlvsink", inData, copylen,
             priv->output_format == V4L2_PIX_FMT_VP9,
             priv->in_frame_cnt);
+        GST_INFO ("dump len %d ts %x", copylen, pts32);
+      }
 #endif
     }
     gst_buffer_unmap (buf, &map);
