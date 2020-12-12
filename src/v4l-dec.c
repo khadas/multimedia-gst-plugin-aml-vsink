@@ -349,7 +349,7 @@ void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num
 
 struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
     uint32_t dw_mode, void *drm_handle, uint32_t *coded_w, uint32_t *coded_h,
-    bool secure, bool pip)
+    bool secure, bool pip, bool is_2k_only)
 {
   int rc, i, j;
   struct v4l2_format fmt;
@@ -372,6 +372,13 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
   w = fmt.fmt.pix_mp.width;
   h = fmt.fmt.pix_mp.height;
   GST_WARNING ("buffer size %dx%d", w, h);
+
+  if (is_2k_only) {
+    if (w > 1920 || h > 1088) {
+      GST_ERROR ("don't support %dx%d > 2k", w, h);
+      return NULL;
+    }
+  }
 
   if (dw_mode != VDEC_DW_AFBC_ONLY) {
     fmt.fmt.pix_mp.num_planes = 2;

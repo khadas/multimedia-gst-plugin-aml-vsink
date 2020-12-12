@@ -70,7 +70,7 @@ struct output_buffer** v4l_setup_output_port (int fd, uint32_t mode,
 struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
     uint32_t dw_mode, void *drm_handle,
     uint32_t *coded_w, uint32_t *coded_h,
-    bool secure, bool pip);
+    bool secure, bool pip, bool is_2k_only);
 
 void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num);
 void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t num);

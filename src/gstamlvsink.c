@@ -706,12 +706,6 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   else
       priv->es_width = -1;
 
-  if (priv->is_2k_only) {
-     if (priv->es_width > 1920 || priv->es_height > 1088) {
-       GST_ERROR ("don't support %dx%d > 2k", width, height);
-       return FALSE;
-     }
-  }
   /* setup double write mode */
   switch (priv->output_format) {
   case V4L2_PIX_FMT_MPEG:
@@ -1099,7 +1093,7 @@ static void handle_v4l_event (GstAmlVsink *sink)
           priv->fd, &priv->cb_num,
           priv->dw_mode, priv->render,
           &priv->coded_w, &priv->coded_h,
-          priv->secure, priv->pip);
+          priv->secure, priv->pip, priv->is_2k_only);
       if (!priv->cb) {
         GST_ERROR ("setup capture fail");
         goto exit;
@@ -1599,11 +1593,12 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
         priv->fd, &priv->cb_num,
         priv->dw_mode, priv->render,
         &priv->coded_w, &priv->coded_h,
-        priv->secure, priv->pip);
+        priv->secure, priv->pip, priv->is_2k_only);
     if (!priv->cb) {
       GST_ERROR_OBJECT (sink, "setup capture fail");
       return GST_FLOW_ERROR;
     }
+
     priv->capture_port_config = TRUE;
     GST_INFO ("setup capture port");
 
