@@ -78,7 +78,7 @@ void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t n
 int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode);
 int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
     struct hdr_meta *hdr);
-int v4l_set_output_format(int fd, uint32_t format, int w, int h);
+int v4l_set_output_format(int fd, uint32_t format, int w, int h, bool only_2k);
 int v4l_set_secure_mode(int fd, int w, int h, bool secure);
 
 int v4l_queue_capture_buffer(int fd, struct capture_buffer *cb);

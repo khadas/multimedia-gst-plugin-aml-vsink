@@ -67,6 +67,7 @@ struct _GstAmlVsinkPrivate
   struct rect window;
 
   gboolean pip;
+  gboolean is_2k_only;
 
   /* v4l2 decoder */
   int fd;
@@ -141,6 +142,7 @@ enum
   PROP_VIDEO_DW_MODE,
   PROP_PAUSE_PTS,
   PROP_SHOW_BLACK_FRAME,
+  PROP_2K_VIDEO,
   PROP_LAST
 };
 
@@ -254,6 +256,11 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_SHOW_BLACK_FRAME,
       g_param_spec_boolean ("black-frame", "black-frame",
         "show black frame once get set(value does not matter)",
+        FALSE, G_PARAM_WRITABLE));
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_2K_VIDEO,
+      g_param_spec_boolean ("video-2k", "video 2k",
+        "only support 2K video",
         FALSE, G_PARAM_WRITABLE));
 
   g_signals[SIGNAL_FIRSTFRAME]= g_signal_new( "first-video-frame-callback",
@@ -539,6 +546,13 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
     GST_WARNING_OBJECT(sink, "pip video enabled %d", priv->pip);
     break;
   }
+  case PROP_2K_VIDEO:
+  {
+    priv->is_2k_only = g_value_get_boolean (value);
+    GST_WARNING_OBJECT(sink, "for 2k video %d", priv->is_2k_only);
+    break;
+  }
+
   case PROP_WINDOW_SET:
   {
     const gchar *str = g_value_get_string (value);
@@ -688,10 +702,16 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
       priv->es_width = -1;
 
   if (gst_structure_get_int (structure, "height", &height))
-      priv->es_height = width;
+      priv->es_height = height;
   else
       priv->es_width = -1;
 
+  if (priv->is_2k_only) {
+     if (priv->es_width > 1920 || priv->es_height > 1088) {
+       GST_ERROR ("don't support %dx%d > 2k", width, height);
+       return FALSE;
+     }
+  }
   /* setup double write mode */
   switch (priv->output_format) {
   case V4L2_PIX_FMT_MPEG:
@@ -786,7 +806,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 
   return TRUE;
 error:
-    return FALSE;
+  return FALSE;
 }
 
 static inline void vsink_reset (GstAmlVsink * sink)
@@ -1443,7 +1463,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     }
 
     rc = v4l_set_output_format (priv->fd, priv->output_format,
-        priv->es_width, priv->es_height);
+        priv->es_width, priv->es_height, priv->is_2k_only);
     if (rc) {
       GST_ERROR_OBJECT (sink, "set output format %x fail", priv->output_format);
       return GST_FLOW_ERROR;

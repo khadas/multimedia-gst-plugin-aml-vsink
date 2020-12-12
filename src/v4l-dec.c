@@ -705,7 +705,7 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   return rc;
 }
 
-int v4l_set_output_format(int fd, uint32_t format, int w, int h)
+int v4l_set_output_format(int fd, uint32_t format, int w, int h, bool only_2k)
 {
   int rc;
   struct v4l2_format fmt;
@@ -718,7 +718,10 @@ int v4l_set_output_format(int fd, uint32_t format, int w, int h)
     fmt.fmt.pix_mp.height = h;
   }
   fmt.fmt.pix_mp.num_planes= 1;
-  fmt.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE;
+  if (only_2k)
+    fmt.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE/4;
+  else
+    fmt.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE;
   fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
   fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
   rc = ioctl (fd, VIDIOC_S_FMT, &fmt);
