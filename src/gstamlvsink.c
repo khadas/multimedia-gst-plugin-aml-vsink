@@ -807,6 +807,7 @@ static inline void vsink_reset (GstAmlVsink * sink)
 {
   GstAmlVsinkPrivate *priv = sink->priv;
 
+  priv->received_eos = FALSE;
   priv->eos = FALSE;
   priv->flushing_ = FALSE;
   priv->first_ts_set = FALSE;
