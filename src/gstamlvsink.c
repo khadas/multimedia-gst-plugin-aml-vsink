@@ -396,7 +396,7 @@ error:
 static gboolean check_vdec(GstAmlVsinkClass *klass)
 {
   gboolean ret = FALSE;
-  int fd;
+  int fd = -1;
   uint32_t fnum;
   struct v4l2_fmtdesc *formats = NULL;
 
@@ -422,8 +422,8 @@ static gboolean check_vdec(GstAmlVsinkClass *klass)
   close (fd);
   ret = TRUE;
 error:
-  if (fd >= 0 )
-    close( fd );
+  if (fd > 0)
+    close (fd);
 
   if (formats)
     g_free (formats);
@@ -1718,15 +1718,6 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
   file_index++;
 #endif
 
-  /* render init */
-  priv->render = display_engine_start(priv, priv->pip);
-  if (!priv->render) {
-    GST_ERROR ("start render fail");
-    goto error;
-  }
-  display_engine_register_cb(capture_buffer_recycle);
-  pause_pts_register_cb(pause_pts_arrived);
-
   if (priv->pause_pts != -1)
     display_set_pause_pts (priv->render, priv->pause_pts);
 
@@ -1813,9 +1804,6 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
   vsink_reset (sink);
   GST_OBJECT_UNLOCK (sink);
 
-  display_engine_stop (priv->render);
-  priv->render = NULL;
-
   return GST_STATE_CHANGE_SUCCESS;
 }
 
@@ -1831,6 +1819,15 @@ gst_aml_vsink_change_state (GstElement * element,
     case GST_STATE_CHANGE_NULL_TO_READY:
     {
       GST_DEBUG_OBJECT(sink, "null to ready");
+      /* render init */
+      priv->render = display_engine_start(priv, priv->pip);
+      if (!priv->render) {
+        GST_ERROR ("start render fail");
+        ret = GST_STATE_CHANGE_FAILURE;
+        break;
+      }
+      display_engine_register_cb(capture_buffer_recycle);
+      pause_pts_register_cb(pause_pts_arrived);
       break;
     }
     case GST_STATE_CHANGE_READY_TO_PAUSED:
@@ -1875,6 +1872,9 @@ gst_aml_vsink_change_state (GstElement * element,
     case GST_STATE_CHANGE_READY_TO_NULL:
     {
       GST_INFO_OBJECT(sink, "ready to null");
+
+      display_engine_stop (priv->render);
+      priv->render = NULL;
       break;
     }
     default:
