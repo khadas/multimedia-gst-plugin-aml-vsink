@@ -1080,7 +1080,12 @@ static void handle_v4l_event (GstAmlVsink *sink)
       priv->coded_h = fmtOut.fmt.pix_mp.height;
 
       pthread_mutex_lock (&priv->res_lock);
-      recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
+      if (priv->capture_port_config) {
+        recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
+        priv->capture_port_config = FALSE;
+        priv->cb = NULL;
+        priv->cb_num = 0;
+      }
       pthread_mutex_unlock (&priv->res_lock);
 
       if (v4l_dec_config(priv->fd, priv->secure,
@@ -1774,8 +1779,12 @@ static void reset_decoder(GstAmlVsink *sink)
   }
 
   pthread_mutex_lock (&priv->res_lock);
-  recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
-  priv->capture_port_config = FALSE;
+  if (priv->capture_port_config) {
+    recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
+    priv->capture_port_config = FALSE;
+    priv->cb_num = 0;
+    priv->cb = NULL;
+  }
   pthread_mutex_unlock (&priv->res_lock);
 
   GST_INFO_OBJECT (sink, "decoder reset");
