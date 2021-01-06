@@ -738,6 +738,7 @@ int v4l_set_output_format(int fd, uint32_t format, int w, int h, bool only_2k)
   return rc;
 }
 
+#if 0
 static int config_sys_node(const char* path, const char* value)
 {
   int fd;
@@ -757,6 +758,7 @@ static int config_sys_node(const char* path, const char* value)
 
   return 0;
 }
+#endif
 
 int v4l_set_secure_mode(int fd, int w, int h, bool secure)
 {
@@ -777,6 +779,10 @@ int v4l_set_secure_mode(int fd, int w, int h, bool secure)
     return -1;
   }
 
+  /* drm will handle this node, it has kernel refcnt,
+   * don't touch it here
+   */
+#if 0
 #define CODEC_MM_TVP "/sys/class/codec_mm/tvp_enable"
   if (secure) {
     GST_WARNING ("secure video");
@@ -790,6 +796,7 @@ int v4l_set_secure_mode(int fd, int w, int h, bool secure)
     GST_WARNING ("non-secure video");
     config_sys_node(CODEC_MM_TVP, "0");
   }
+#endif
 
   memset (&control, 0, sizeof (control) );
   control.id = AML_V4L2_SET_DRMMODE;
