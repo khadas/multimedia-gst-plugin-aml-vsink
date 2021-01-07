@@ -25,7 +25,7 @@ GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
 #define MIN_OUTPUT_BUFFERS (1)
 #define MIN_CAPTURE_BUFFERS (3)
 #define OUTPUT_BUFFER_SIZE (0x400000)
-#define EXTRA_CAPTURE_BUFFERS (7)
+#define EXTRA_CAPTURE_BUFFERS (5)
 static const char* video_dev_name = "/dev/video26";
 
 int v4l_dec_open()
