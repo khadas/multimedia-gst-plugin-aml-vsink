@@ -1087,45 +1087,47 @@ static void handle_v4l_event (GstAmlVsink *sink)
         priv->cb_num = 0;
       }
       pthread_mutex_unlock (&priv->res_lock);
-
-      if (v4l_dec_config(priv->fd, priv->secure,
-            priv->output_format, priv->dw_mode,
-            &priv->hdr)) {
-        GST_ERROR("v4l_dec_config failed");
-        goto exit;
-      }
-
-      priv->cb = v4l_setup_capture_port (
-          priv->fd, &priv->cb_num,
-          priv->dw_mode, priv->render,
-          &priv->coded_w, &priv->coded_h,
-          priv->secure, priv->pip, priv->is_2k_only);
-      if (!priv->cb) {
-        GST_ERROR ("setup capture fail");
-        goto exit;
-      }
-      priv->capture_port_config = TRUE;
-
-      rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
-      if ( rc < 0 )
-      {
-        GST_ERROR ("streamon failed for output: rc %d errno %d", rc, errno );
-        goto exit;
-      }
-
-      memset( &selection, 0, sizeof(selection) );
-      selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-      selection.target = V4L2_SEL_TGT_COMPOSE;
-      rc = ioctl (priv->fd, VIDIOC_G_SELECTION, &selection);
-      if (rc) {
-        GST_ERROR ("fail to get visible dimension %d", errno);
-      }
-      priv->visible_w = selection.r.width;
-      priv->visible_h = selection.r.height;
-      GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
-    } else {
-      GST_WARNING ("ignore source change event at beginning");
     }
+
+    GST_INFO ("setup capture port");
+    if (v4l_dec_config(priv->fd, priv->secure,
+          priv->output_format, priv->dw_mode,
+          &priv->hdr)) {
+      GST_ERROR("v4l_dec_config failed");
+      goto exit;
+    }
+
+    pthread_mutex_lock (&priv->res_lock);
+    priv->cb = v4l_setup_capture_port (
+        priv->fd, &priv->cb_num,
+        priv->dw_mode, priv->render,
+        &priv->coded_w, &priv->coded_h,
+        priv->secure, priv->pip, priv->is_2k_only);
+    if (!priv->cb) {
+      pthread_mutex_unlock (&priv->res_lock);
+      GST_ERROR ("setup capture fail");
+      goto exit;
+    }
+    priv->capture_port_config = TRUE;
+    pthread_mutex_unlock (&priv->res_lock);
+
+    rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
+    if ( rc < 0 )
+    {
+      GST_ERROR ("streamon failed for output: rc %d errno %d", rc, errno );
+      goto exit;
+    }
+
+    memset( &selection, 0, sizeof(selection) );
+    selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    selection.target = V4L2_SEL_TGT_COMPOSE;
+    rc = ioctl (priv->fd, VIDIOC_G_SELECTION, &selection);
+    if (rc) {
+      GST_ERROR ("fail to get visible dimension %d", errno);
+    }
+    priv->visible_w = selection.r.width;
+    priv->visible_h = selection.r.height;
+    GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
   } else if (event.type == V4L2_EVENT_EOS) {
     GST_WARNING_OBJECT (sink, "V4L EOS");
     pthread_mutex_lock (&priv->res_lock);
@@ -1219,25 +1221,6 @@ static gpointer video_decode_thread(gpointer data)
 
   prctl (PR_SET_NAME, "aml_v_dec");
   GST_INFO_OBJECT (sink, "enter");
-  type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-  rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
-  if ( rc < 0 )
-  {
-    GST_ERROR("streamon failed for output: rc %d errno %d", rc, errno );
-    goto exit;
-  }
-
-  memset( &selection, 0, sizeof(selection) );
-  selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-  selection.target = V4L2_SEL_TGT_COMPOSE;
-  rc = ioctl (priv->fd, VIDIOC_G_SELECTION, &selection);
-  if (rc) {
-    GST_ERROR ("fail to get visible dimension %d", errno);
-  }
-  priv->visible_w = selection.r.width;
-  priv->visible_h = selection.r.height;
-  GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
-
 
   /* av sync mode */
   priv->avsync_mode = AV_SYNC_MODE_VMASTER;
@@ -1283,6 +1266,10 @@ static gpointer video_decode_thread(gpointer data)
 
     if (pfd.revents & POLLPRI) {
       handle_v4l_event (sink);
+      continue;
+    }
+    if (!priv->capture_port_config) {
+      GST_WARNING_OBJECT (sink, "should not be here");
       continue;
     }
 
@@ -1588,25 +1575,6 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       GST_ERROR ("streamon failed for output: rc %d errno %d", rc, errno );
       return GST_FLOW_ERROR;
     }
-
-    if (v4l_dec_config (priv->fd, priv->secure,
-          priv->output_format, priv->dw_mode, &priv->hdr)) {
-      GST_ERROR("v4l_dec_config failed");
-      return GST_FLOW_ERROR;
-    }
-
-    priv->cb = v4l_setup_capture_port (
-        priv->fd, &priv->cb_num,
-        priv->dw_mode, priv->render,
-        &priv->coded_w, &priv->coded_h,
-        priv->secure, priv->pip, priv->is_2k_only);
-    if (!priv->cb) {
-      GST_ERROR_OBJECT (sink, "setup capture fail");
-      return GST_FLOW_ERROR;
-    }
-
-    priv->capture_port_config = TRUE;
-    GST_INFO ("setup capture port");
 
     if (start_video_thread (sink)) {
       GST_ERROR("start_video_thread failed");
