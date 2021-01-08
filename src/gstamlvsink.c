@@ -1216,7 +1216,6 @@ static gpointer video_decode_thread(gpointer data)
   int rc;
   GstAmlVsink * sink = data;
   GstAmlVsinkPrivate *priv = sink->priv;
-  struct v4l2_selection selection;
   uint32_t type;
 
   prctl (PR_SET_NAME, "aml_v_dec");
@@ -1394,7 +1393,7 @@ static int get_output_buffer(GstAmlVsink * sink)
     buf.memory = priv->output_mode;
     buf.length = 1;
     buf.m.planes = &plane;
-    rc = ioctl ( priv->fd, VIDIOC_DQBUF, &buf );
+    rc = ioctl (priv->fd, VIDIOC_DQBUF, &buf);
     if (!rc) {
       GST_OBJECT_LOCK (sink);
       if (priv->ob) {
@@ -1495,6 +1494,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     if (GST_BUFFER_PTS_IS_VALID (buf))
       GST_TIME_TO_TIMEVAL (GST_BUFFER_PTS(buf), ob->buf.timestamp);
 
+    GST_LOG_OBJECT (sink, "queue ob %d ts %lld", ob->buf.index, GST_BUFFER_PTS(buf));
     inSize= gst_memory_get_sizes( mem, &dataOffset, &maxSize );
 
     ob->buf.bytesused = dataOffset+inSize;
@@ -1714,7 +1714,7 @@ static void reset_decoder(GstAmlVsink *sink)
   uint32_t type;
   GstAmlVsinkPrivate *priv = sink->priv;
 
-  priv->quitVideoOutputThread= TRUE;
+  priv->quitVideoOutputThread = TRUE;
 
   /* stop output port */
   type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
@@ -1724,6 +1724,7 @@ static void reset_decoder(GstAmlVsink *sink)
   }
 
   recycle_output_port_buffer (priv->fd, priv->ob, priv->ob_num);
+  priv->ob_num = 0;
 
   /* stop capture port */
   type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
