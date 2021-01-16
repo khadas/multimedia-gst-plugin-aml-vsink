@@ -514,7 +514,13 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
   switch (property_id) {
   case PROP_PAUSE_PTS:
   {
+    GST_OBJECT_LOCK ( sink );
     priv->pause_pts = g_value_get_uint (value);
+    if (priv->render) {
+        display_set_pause_pts (priv->render, priv->pause_pts);
+        priv->pause_pts = -1;
+    }
+    GST_OBJECT_UNLOCK ( sink );
     GST_WARNING_OBJECT (sink, "pause PTS %u", priv->pause_pts);
     break;
   }
@@ -1686,8 +1692,10 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
   file_index++;
 #endif
 
-  if (priv->pause_pts != -1)
+  if (priv->pause_pts != -1) {
     display_set_pause_pts (priv->render, priv->pause_pts);
+    priv->pause_pts = -1;
+  }
 
   priv->paused = TRUE;
   priv->avsync_paused = FALSE;
@@ -1771,6 +1779,7 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
   stop_eos_thread (sink);
   GST_OBJECT_LOCK (sink);
   vsink_reset (sink);
+  priv->pause_pts = -1;
   GST_OBJECT_UNLOCK (sink);
 
   return GST_STATE_CHANGE_SUCCESS;
@@ -1788,22 +1797,27 @@ gst_aml_vsink_change_state (GstElement * element,
     case GST_STATE_CHANGE_NULL_TO_READY:
     {
       GST_DEBUG_OBJECT(sink, "null to ready");
+      GST_OBJECT_LOCK (sink);
       /* render init */
       priv->render = display_engine_start(priv, priv->pip);
       if (!priv->render) {
         GST_ERROR ("start render fail");
         ret = GST_STATE_CHANGE_FAILURE;
+        GST_OBJECT_UNLOCK (sink);
         break;
       }
       display_engine_register_cb(capture_buffer_recycle);
       pause_pts_register_cb(pause_pts_arrived);
+      GST_OBJECT_UNLOCK (sink);
       break;
     }
     case GST_STATE_CHANGE_READY_TO_PAUSED:
     {
       GST_INFO_OBJECT(sink, "ready to paused");
       gst_base_sink_set_async_enabled (GST_BASE_SINK_CAST(sink), FALSE);
+      GST_OBJECT_LOCK (sink);
       ret = ready_to_pause (sink);
+      GST_OBJECT_UNLOCK (sink);
       break;
     }
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
@@ -1841,9 +1855,10 @@ gst_aml_vsink_change_state (GstElement * element,
     case GST_STATE_CHANGE_READY_TO_NULL:
     {
       GST_INFO_OBJECT(sink, "ready to null");
-
+      GST_OBJECT_LOCK (sink);
       display_engine_stop (priv->render);
       priv->render = NULL;
+      GST_OBJECT_UNLOCK (sink);
       break;
     }
     default:

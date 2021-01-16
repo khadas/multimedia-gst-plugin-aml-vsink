@@ -115,7 +115,6 @@ int display_start_avsync(void *handle, enum sync_mode mode, bool pip)
   struct video_disp * disp = handle;
   int session = pip ? 1 : 0;
 
-  log_set_level (LOG_INFO);
   //TODO get correct refresh rate through display_res_change_cb
   pthread_mutex_lock (&disp->avsync_lock);
   disp->avsync = av_sync_create(session, mode, 2, 1, 90000/60);
