@@ -1313,6 +1313,9 @@ static gpointer video_decode_thread(gpointer data)
     }
     GST_OBJECT_UNLOCK (sink);
 
+    if (priv->paused)
+      continue;
+
     if (priv->out_frame_cnt == 0) {
       GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld", frame_ts);
       g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_FIRSTFRAME], 0, 2, NULL);
