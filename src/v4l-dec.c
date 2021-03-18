@@ -25,7 +25,8 @@ GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
 #define MIN_OUTPUT_BUFFERS (1)
 #define MIN_CAPTURE_BUFFERS (3)
 #define OUTPUT_BUFFER_SIZE (0x400000)
-#define EXTRA_CAPTURE_BUFFERS (5)
+#define OUTPUT_BUFFER_SIZE_2K (0xC0000)
+#define EXTRA_CAPTURE_BUFFERS (4)
 static const char* video_dev_name = "/dev/video26";
 
 int v4l_dec_open()
@@ -541,7 +542,9 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode)
   decParm->parms_status = V4L2_CONFIG_PARM_DECODE_CFGINFO;
   decParm->cfg.double_write_mode = dw_mode;
 
-  if (fmt != V4L2_PIX_FMT_MPEG2 && fmt != V4L2_PIX_FMT_MPEG1)
+  if (fmt == V4L2_PIX_FMT_H264)
+    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS+1;
+  else if (fmt != V4L2_PIX_FMT_MPEG2 && fmt != V4L2_PIX_FMT_MPEG1)
     decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS;
 
   rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
@@ -726,7 +729,7 @@ int v4l_set_output_format(int fd, uint32_t format, int w, int h, bool only_2k)
   }
   fmt.fmt.pix_mp.num_planes= 1;
   if (only_2k)
-    fmt.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE/4;
+    fmt.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE_2K;
   else
     fmt.fmt.pix_mp.plane_fmt[0].sizeimage = OUTPUT_BUFFER_SIZE;
   fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
