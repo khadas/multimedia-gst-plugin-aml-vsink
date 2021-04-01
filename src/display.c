@@ -41,7 +41,6 @@ struct video_disp {
   struct drm_display *drm;
   bool started;
   pthread_t disp_t;
-  void * avsync;
   bool last_frame;
   int drm_mode_set;
   void *priv;
@@ -52,6 +51,11 @@ struct video_disp {
   /* trick play */
   bool speed_pending;
   float speed;
+
+  /* avsync */
+  void * avsync;
+  int session;
+  int session_id;
 };
 
 static struct drm_frame* create_black_frame (void* handle,
@@ -88,6 +92,7 @@ void *display_engine_start(void* priv, bool pip)
   disp->drm = drm;
   disp->priv = priv;
   disp->pause_pts = -1;
+  disp->session = -1;
   pthread_mutex_init (&disp->avsync_lock, NULL);
 
   disp->black_frame = create_black_frame (disp, 64, 64, pip);
@@ -114,15 +119,26 @@ int display_start_avsync(void *handle, enum sync_mode mode, bool pip)
 {
   struct video_disp * disp = handle;
   int session = pip ? 1 : 0;
+  int ret = 0;
+  struct video_config config;
 
-  //TODO get correct refresh rate through display_res_change_cb
   pthread_mutex_lock (&disp->avsync_lock);
-  disp->avsync = av_sync_create(session, mode, 2, 1, 90000/60);
-  if (!disp->avsync) {
-    pthread_mutex_unlock (&disp->avsync_lock);
-    GST_ERROR ("create avsync fails\n");
-    return -1;
+  disp->session = av_sync_open_session(&disp->session_id);
+  if (disp->session < 0) {
+    GST_ERROR ("create avsync session fail\n");
+    ret = -1;
+    goto exit;
   }
+  disp->avsync = av_sync_create(disp->session_id, mode, AV_SYNC_TYPE_VIDEO, 2);
+  if (!disp->avsync) {
+    GST_ERROR ("create avsync fails\n");
+    ret = -1;
+    goto exit;
+  }
+
+  config.delay = 2;
+  av_sync_video_config(disp->avsync, &config);
+
   if (disp->speed_pending) {
     disp->speed_pending = false;
     av_sync_set_speed (disp->avsync, disp->speed);
@@ -134,6 +150,10 @@ int display_start_avsync(void *handle, enum sync_mode mode, bool pip)
     av_sync_set_pause_pts (disp->avsync, disp->pause_pts);
   }
   return 0;
+
+exit:
+  pthread_mutex_unlock (&disp->avsync_lock);
+  return ret;
 }
 
 void display_stop_avsync(void *handle)
@@ -144,6 +164,10 @@ void display_stop_avsync(void *handle)
   if (disp->avsync) {
     av_sync_destroy (disp->avsync);
     disp->avsync = NULL;
+  }
+  if (disp->session > 0) {
+    av_sync_close_session(disp->session);
+    disp->session = -1;
   }
   disp->speed_pending = false;
   pthread_mutex_unlock (&disp->avsync_lock);
