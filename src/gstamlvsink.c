@@ -34,6 +34,8 @@
 #include <aml_avsync.h>
 #include <gst/allocators/gstdmabuf.h>
 //#include <gst/gstclock.h>
+#include <gstamlclock.h>
+#include <gstamlhalasink_new.h>
 #include "gstamlvsink.h"
 #include "v4l-dec.h"
 #include "display.h"
@@ -100,6 +102,7 @@ struct _GstAmlVsinkPrivate
   void *render;
   enum sync_mode avsync_mode;
   gboolean avsync_paused;
+  int sessionId;
 
   GstCaps *caps;
 
@@ -1176,6 +1179,7 @@ gboolean detect_audio_sync(GstAmlVsink * sink)
 {
   GstElement *pipeline = NULL;
   GstElement *element, *elementPrev = NULL;
+  GstAmlVsinkPrivate *priv = sink->priv;
   gboolean found = FALSE;
 
   element = GST_ELEMENT_CAST (sink);
@@ -1202,8 +1206,12 @@ gboolean detect_audio_sync(GstAmlVsink * sink)
           const gchar *name = g_type_name(G_OBJECT_TYPE(element));
 
           if (name && !strcmp(name, "GstAmlHalAsink")) {
+            GstClock* amlclock= gst_aml_hal_asink_get_clock (element);
+
             found = TRUE;
+            priv->sessionId = gst_aml_clock_get_session_id (amlclock);
             GST_INFO ("detected audio sink %s", name);
+            gst_object_unref (amlclock);
             g_value_reset (&val);
             break;
           }
@@ -1235,7 +1243,9 @@ static gpointer video_decode_thread(gpointer data)
     else
       GST_INFO ("no amlhalasink in pipeline");
 
-    rc = display_start_avsync (priv->render, priv->avsync_mode, priv->pip);
+    rc = display_start_avsync (priv->render,
+            priv->avsync_mode,
+            priv->sessionId);
     if (rc) {
       GST_ERROR ("start avsync error");
       goto exit;

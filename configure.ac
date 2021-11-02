@@ -38,6 +38,15 @@ PKG_CHECK_MODULES(DRM, [
   AC_MSG_ERROR([Wrong libDRM version])
 ])
 
+PKG_CHECK_MODULES(ASINK, [
+  amlhalasink >= 1.0.0
+], [
+  AC_SUBST(ASINK_CFLAGS)
+  AC_SUBST(ASINK_LIBS)
+], [
+  AC_MSG_ERROR([Wrong asink plugin version])
+])
+
 dnl Check for the required version of GStreamer core (and gst-plugins-base)
 dnl This will export GST_CFLAGS and GST_LIBS variables for use in Makefile.am
 dnl

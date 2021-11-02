@@ -55,7 +55,6 @@ struct video_disp {
   /* avsync */
   void * avsync;
   int session;
-  int session_id;
 };
 
 static struct drm_frame* create_black_frame (void* handle,
@@ -115,21 +114,27 @@ static void pause_pts_cb(uint32_t pts, void* priv)
   disp->pause_pts = -1;
 }
 
-int display_start_avsync(void *handle, enum sync_mode mode, bool pip)
+int display_start_avsync(void *handle, enum sync_mode mode, int id)
 {
   struct video_disp * disp = handle;
-  int session = pip ? 1 : 0;
   int ret = 0;
   struct video_config config;
 
   pthread_mutex_lock (&disp->avsync_lock);
-  disp->session = av_sync_open_session(&disp->session_id);
-  if (disp->session < 0) {
-    GST_ERROR ("create avsync session fail\n");
-    ret = -1;
-    goto exit;
+  if (mode == AV_SYNC_MODE_VMASTER) {
+    int session_id;
+
+    disp->session = av_sync_open_session(&session_id);
+    if (disp->session < 0) {
+      GST_ERROR ("create avsync session fail\n");
+      ret = -1;
+      goto exit;
+    }
+    id = session_id;
+    GST_WARNING ("session ID %d", id);
   }
-  disp->avsync = av_sync_create(disp->session_id, mode, AV_SYNC_TYPE_VIDEO, 2);
+
+  disp->avsync = av_sync_create(id, mode, AV_SYNC_TYPE_VIDEO, 2);
   if (!disp->avsync) {
     GST_ERROR ("create avsync fails\n");
     ret = -1;
@@ -160,6 +165,7 @@ void display_stop_avsync(void *handle)
 {
   struct video_disp * disp = handle;
 
+  GST_WARNING ("stop avsync");
   pthread_mutex_lock (&disp->avsync_lock);
   if (disp->avsync) {
     av_sync_destroy (disp->avsync);
