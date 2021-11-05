@@ -58,7 +58,7 @@ struct hdr_meta {
   int ContentLightLevel[2];
 };
 
-int v4l_dec_open();
+int v4l_dec_open(bool sanity_check);
 int v4l_reg_event(int fd);
 int v4l_unreg_event(int fd);
 

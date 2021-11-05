@@ -29,18 +29,21 @@ GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
 #define EXTRA_CAPTURE_BUFFERS (4)
 static const char* video_dev_name = "/dev/video26";
 
-int v4l_dec_open()
+int v4l_dec_open(bool sanity_check)
 {
   int fd, rc;
   uint32_t deviceCaps;
   struct v4l2_capability caps;
   struct v4l2_exportbuffer eb;
 
-  fd = open (video_dev_name, O_RDWR );
+  fd = open (video_dev_name, O_RDWR | O_CLOEXEC);
   if ( fd < 0 ) {
     GST_ERROR ("can not open %s errno %d", video_dev_name, errno);
     goto error;
   }
+
+  if (!sanity_check)
+    return fd;
 
   rc = ioctl (fd, VIDIOC_QUERYCAP, &caps);
   if (rc) {
@@ -309,6 +312,7 @@ struct output_buffer** v4l_setup_output_port (int fd, uint32_t mode, uint32_t *b
 	}
 
   *buf_cnt = cnt;
+  GST_LOG ("alloc %d buffers from %p", cnt, ob);
   return ob;
 
 error:
@@ -325,6 +329,10 @@ void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num
       .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
       .count = 0,
     };
+
+    GST_LOG ("recycle %d buffers from %p", num, ob);
+    if (!num)
+      return;
 
     ret = ioctl(fd, VIDIOC_REQBUFS, &req);
     if (ret) {
@@ -344,7 +352,6 @@ void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num
       free (ob[i]);
     }
     free (ob);
-    *ob = NULL;
   }
 }
 
@@ -527,7 +534,6 @@ void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t n
       }
     }
     free (cb);
-    *cb = NULL;
   }
 }
 

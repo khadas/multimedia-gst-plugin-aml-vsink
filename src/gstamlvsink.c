@@ -192,7 +192,7 @@ static gboolean gst_aml_vsink_event(GstAmlVsink *sink, GstEvent * event);
 static gboolean gst_aml_vsink_pad_event (GstPad * pad, GstObject * parent, GstEvent * event);
 static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps);
 
-static void reset_decoder(GstAmlVsink *sink);
+static void reset_decoder(GstAmlVsink *sink, bool hard);
 static gboolean check_vdec(GstAmlVsinkClass *klass);
 static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed);
 static int pause_pts_arrived(void* priv, uint32_t pts);
@@ -404,7 +404,7 @@ static gboolean check_vdec(GstAmlVsinkClass *klass)
   struct v4l2_fmtdesc *formats = NULL;
 
   GST_TRACE ("open vdec");
-  fd = v4l_dec_open();
+  fd = v4l_dec_open (true);
   if (fd < 0) {
     GST_ERROR("dec ope fail");
     goto error;
@@ -935,7 +935,7 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
       GST_INFO_OBJECT (sink, "flush stop");
 
       GST_OBJECT_LOCK (sink);
-      reset_decoder (sink);
+      reset_decoder (sink, true);
       vsink_reset (sink);
       GST_OBJECT_UNLOCK (sink);
 #ifdef DUMP_TO_FILE
@@ -1669,7 +1669,7 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
   struct v4l2_fmtdesc *formats = NULL;
   int rc;
 
-  fd = v4l_dec_open();
+  fd = v4l_dec_open (true);
   if (fd < 0) {
     GST_ERROR("dec open fail");
     goto error;
@@ -1726,7 +1726,7 @@ error:
 
 }
 
-static void reset_decoder(GstAmlVsink *sink)
+static void reset_decoder(GstAmlVsink *sink, bool hard)
 {
   int ret;
   uint32_t type;
@@ -1743,6 +1743,7 @@ static void reset_decoder(GstAmlVsink *sink)
 
   recycle_output_port_buffer (priv->fd, priv->ob, priv->ob_num);
   priv->ob_num = 0;
+  priv->ob = NULL;
 
   /* stop capture port */
   type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
@@ -1765,7 +1766,20 @@ static void reset_decoder(GstAmlVsink *sink)
   }
   pthread_mutex_unlock (&priv->res_lock);
 
-  GST_INFO_OBJECT (sink, "decoder reset");
+  if (hard) {
+    pthread_mutex_lock (&priv->res_lock);
+    if (priv->fd > 0)
+      close (priv->fd);
+    priv->fd = v4l_dec_open(false);
+    if (priv->fd < 0) {
+      GST_ERROR("dec open fail");
+    } else {
+      if (v4l_reg_event(priv->fd))
+        GST_ERROR("reg event fail");
+    }
+    pthread_mutex_unlock (&priv->res_lock);
+  }
+  GST_INFO_OBJECT (sink, "decoder reset hard %d", hard);
 }
 
 static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
@@ -1774,7 +1788,7 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
 
   GST_OBJECT_LOCK (sink);
   priv->flushing_ = TRUE;
-  reset_decoder (sink);
+  reset_decoder (sink, false);
 
   v4l_unreg_event (priv->fd);
 
