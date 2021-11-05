@@ -128,6 +128,7 @@ struct _GstAmlVsinkPrivate
   int out_frame_cnt;
   int dropped_frame_num;
   int rendered_frame_num;
+  gboolean last_res_frame;
 
   /* trick play */
   gfloat rate;
@@ -1044,17 +1045,20 @@ after_eos:
   }
 }
 
-static void handle_v4l_event (GstAmlVsink *sink)
+/* return false for retry, true for conitnue processing */
+static bool handle_v4l_event (GstAmlVsink *sink)
 {
-	int rc;
-	struct v4l2_event event;
+  int rc;
+  struct v4l2_event event;
   GstAmlVsinkPrivate *priv = sink->priv;
 
-	GST_OBJECT_LOCK (sink);
+  if (!priv->last_res_frame && priv->out_frame_cnt)
+    return true;
 
-	memset (&event, 0, sizeof(event));
+  GST_OBJECT_LOCK (sink);
+  memset (&event, 0, sizeof(event));
 
-	rc= ioctl (priv->fd, VIDIOC_DQEVENT, &event);
+  rc= ioctl (priv->fd, VIDIOC_DQEVENT, &event);
   if (rc) {
     GST_ERROR ("fail VIDIOC_DQEVENT %d", errno);
     goto exit;
@@ -1136,6 +1140,7 @@ static void handle_v4l_event (GstAmlVsink *sink)
     }
     priv->visible_w = selection.r.width;
     priv->visible_h = selection.r.height;
+    priv->last_res_frame = FALSE;
     GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
   } else if (event.type == V4L2_EVENT_EOS) {
     GST_WARNING_OBJECT (sink, "V4L EOS");
@@ -1145,6 +1150,7 @@ static void handle_v4l_event (GstAmlVsink *sink)
   }
 exit:
   GST_OBJECT_UNLOCK (sink);
+  return false;
 }
 
 static struct capture_buffer* dqueue_capture_buffer(GstAmlVsink * sink)
@@ -1280,8 +1286,8 @@ static gpointer video_decode_thread(gpointer data)
     }
 
     if (pfd.revents & POLLPRI) {
-      handle_v4l_event (sink);
-      continue;
+      if (!handle_v4l_event (sink))
+        continue;
     }
     if (!priv->capture_port_config) {
       GST_WARNING_OBJECT (sink, "should not be here");
@@ -1304,7 +1310,9 @@ static gpointer video_decode_thread(gpointer data)
     }
 
     if (cb->buf.flags & V4L2_BUF_FLAG_LAST) {
+      priv->last_res_frame = TRUE;
       GST_WARNING_OBJECT (sink, "get last frame");
+      handle_v4l_event (sink);
       continue;
     }
 
@@ -1779,6 +1787,7 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
     }
     pthread_mutex_unlock (&priv->res_lock);
   }
+  priv->last_res_frame = FALSE;
   GST_INFO_OBJECT (sink, "decoder reset hard %d", hard);
 }
 

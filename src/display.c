@@ -377,6 +377,8 @@ static void * display_thread_func(void * arg)
         GST_ERROR ("drmWaitVBlank error %d\n", rc);
         return NULL;
       }
+    } else {
+      usleep(1000);
     }
 
     pthread_mutex_lock (&disp->avsync_lock);
