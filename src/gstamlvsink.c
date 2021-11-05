@@ -1761,7 +1761,9 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
   }
 
   if (priv->videoOutputThread) {
+    GST_OBJECT_UNLOCK (sink);
     g_thread_join (priv->videoOutputThread);
+    GST_OBJECT_LOCK (sink);
     priv->videoOutputThread = NULL;
   }
 
@@ -1799,10 +1801,9 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
   priv->flushing_ = TRUE;
   reset_decoder (sink, false);
 
-  v4l_unreg_event (priv->fd);
-
   pthread_mutex_lock (&priv->res_lock);
   if (priv->fd > 0) {
+    v4l_unreg_event (priv->fd);
     close (priv->fd);
     priv->fd = -1;
   }
