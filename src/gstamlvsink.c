@@ -1277,10 +1277,12 @@ static gpointer video_decode_thread(gpointer data)
       if (priv->quitVideoOutputThread)
         break;
 
+      GST_OBJECT_LOCK (sink);
       if (priv->avsync_paused && !priv->paused) {
         display_set_pause (priv->render, false);
         priv->avsync_paused = false;
       }
+      GST_OBJECT_UNLOCK (sink);
       if (errno == EINTR)
         continue;
     }
@@ -1856,7 +1858,7 @@ gst_aml_vsink_change_state (GstElement * element,
     }
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
     {
-      GST_INFO_OBJECT(sink, "paused to playing");
+      GST_INFO_OBJECT(sink, "paused to playing avsync_paused %d", priv->avsync_paused);
       GST_OBJECT_LOCK (sink);
       priv->paused = FALSE;
       if (priv->avsync_paused) {
@@ -1957,6 +1959,11 @@ static int pause_pts_arrived(void* handle, uint32_t pts)
 {
   GstAmlVsinkPrivate *priv = handle;
   GstAmlVsink *sink = priv->sink;
+
+  GST_OBJECT_LOCK (sink);
+  priv->avsync_paused = TRUE;
+  priv->paused = TRUE;
+  GST_OBJECT_UNLOCK (sink);
 
   GST_WARNING_OBJECT (sink, "emit pause pts signal %u", pts);
   g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_PAUSEPTS], 0, pts, NULL);

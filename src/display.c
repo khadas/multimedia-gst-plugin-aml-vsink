@@ -508,6 +508,7 @@ int display_set_pause(void *handle, bool pause)
 {
   struct video_disp *disp = handle;
 
+  GST_INFO ("pause %d", pause);
   return av_sync_pause (disp->avsync, pause);
 }
 
