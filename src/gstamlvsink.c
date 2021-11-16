@@ -1321,7 +1321,9 @@ static gpointer video_decode_thread(gpointer data)
     frame_ts = GST_TIMEVAL_TO_TIME(cb->buf.timestamp);
     if (frame_ts < priv->segment.start) {
       GST_INFO ("drop frame %lld before start %lld", frame_ts, priv->segment.start);
+      pthread_mutex_lock (&priv->res_lock);
       v4l_queue_capture_buffer (priv->fd, cb);
+      pthread_mutex_unlock (&priv->res_lock);
       continue;
     }
 
@@ -1347,13 +1349,13 @@ static gpointer video_decode_thread(gpointer data)
 
     cb->drm_frame->pri_dec = cb;
     cb->drm_frame->pts = gst_util_uint64_scale_int (frame_ts, PTS_90K, GST_SECOND);
+
+    cb->displayed = true;
     rc = display_engine_show (priv->render, cb->drm_frame, &priv->window);
     if (rc)
       GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
-    else {
-      cb->displayed = true;
+    else
       GST_LOG_OBJECT (sink, "cb index %d to display", cb->id);
-    }
   }
 
 exit:

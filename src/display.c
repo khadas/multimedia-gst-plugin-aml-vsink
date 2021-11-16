@@ -480,14 +480,9 @@ int display_engine_show(void* handle, struct drm_frame* frame, struct rect* wind
   sync_frame->free = sync_frame_free;
   frame->window = *window;
 
-  while (disp->started) {
-    if (av_sync_push_frame(disp->avsync, sync_frame)) {
-      usleep(1000);
-      continue;
-    } else
-      break;
-  }
-  GST_LOG ("push frame: %u", sync_frame->pts);
+  rc = av_sync_push_frame(disp->avsync, sync_frame);
+  if (!rc)
+    GST_LOG ("push frame: %u", sync_frame->pts);
 
   return 0;
 }
