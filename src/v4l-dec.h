@@ -22,6 +22,8 @@ enum vdec_dw_mode {
   VDEC_DW_AFBC_x2_1_4_DW = 3,
   VDEC_DW_AFBC_1_2_DW = 4,
   VDEC_DW_NO_AFBC = 16,
+  VDEC_DW_AFBC_AUTO_1_2 = 0x100,
+  VDEC_DW_AFBC_AUTO_1_4 = 0x200
 };
 
 struct output_buffer {

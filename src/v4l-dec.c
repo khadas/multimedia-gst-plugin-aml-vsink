@@ -588,6 +588,8 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   decParm->cfg.double_write_mode = dw_mode;
   if (fmt != V4L2_PIX_FMT_MPEG2)
     decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS;
+  decParm->cfg.metadata_config_flag |= (1 << 12);
+  decParm->cfg.metadata_config_flag |= (1 << 13);
 
 
 	if (hdr->haveColorimetry || hdr->haveMasteringDisplay ||

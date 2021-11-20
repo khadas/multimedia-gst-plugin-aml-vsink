@@ -249,8 +249,8 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
 
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_VIDEO_DW_MODE,
       g_param_spec_int ("double-write-mode", "double-write-mode",
-        "0/1/2/4/16 Only 16 is valid for h264/mepg2.",
-        0, 16, 0, G_PARAM_WRITABLE));
+        "0/1/2/4/16/256/512 Only 16 is valid for h264/mepg2.",
+        0, 512, 0, G_PARAM_WRITABLE));
 
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_PAUSE_PTS,
       g_param_spec_uint ("pause-pts", "pause pts",
@@ -541,7 +541,9 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
         mode == VDEC_DW_AFBC_1_1_DW ||
         mode == VDEC_DW_AFBC_1_4_DW ||
         mode == VDEC_DW_AFBC_1_2_DW ||
-        mode == VDEC_DW_NO_AFBC) {
+        mode == VDEC_DW_NO_AFBC ||
+        mode == VDEC_DW_AFBC_AUTO_1_2 ||
+        mode == VDEC_DW_AFBC_AUTO_1_4) {
       priv->dw_mode = mode;
       priv->dw_mode_user_set = TRUE;
       GST_WARNING_OBJECT (sink, "double write mode %d", priv->dw_mode);
@@ -730,12 +732,14 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
     break;
   case V4L2_PIX_FMT_HEVC:
   case V4L2_PIX_FMT_VP9:
+  case V4L2_PIX_FMT_AV1:
     if (priv->dw_mode_user_set) {
       GST_WARNING_OBJECT (sink, "enforce user dw mode %d", priv->dw_mode);
       break;
     }
-    priv->dw_mode = VDEC_DW_AFBC_ONLY;
+    priv->dw_mode = VDEC_DW_AFBC_1_4_DW;
 #if 0
+    priv->dw_mode = VDEC_DW_AFBC_ONLY;
     if (priv->es_width > 1920 || priv->es_width > 1080)
       priv->dw_mode = VDEC_DW_AFBC_1_2_DW;
     else
