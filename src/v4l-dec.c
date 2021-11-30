@@ -381,13 +381,6 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
   h = fmt.fmt.pix_mp.height;
   GST_WARNING ("buffer size %dx%d", w, h);
 
-  if (is_2k_only) {
-    if (w > 1920 || h > 1088) {
-      GST_ERROR ("don't support %dx%d > 2k", w, h);
-      return NULL;
-    }
-  }
-
   if (dw_mode != VDEC_DW_AFBC_ONLY) {
     fmt.fmt.pix_mp.num_planes = 2;
     pixelFormat = V4L2_PIX_FMT_NV12M;
@@ -561,7 +554,7 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode)
 }
 
 int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
-    struct hdr_meta *hdr)
+    struct hdr_meta *hdr, bool is_2k_only)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -580,6 +573,13 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   w = v4l_fmt.fmt.pix_mp.width;
   h = v4l_fmt.fmt.pix_mp.height;
   GST_INFO ("coded size %dx%d", w, h);
+
+  if (is_2k_only) {
+    if (w > 1920 || h > 1088) {
+      GST_ERROR ("don't support %dx%d > 2k", w, h);
+      return -1;
+    }
+  }
 
   memset (&streamparm, 0, sizeof(streamparm));
   streamparm.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;

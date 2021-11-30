@@ -52,6 +52,7 @@ struct _GstAmlVsinkPrivate
   gboolean flushing_;
   gboolean received_eos;
   gboolean eos;
+  gboolean internal_err;
   guint32 seqnum; /* for eos */
 
   /* for position */
@@ -822,6 +823,7 @@ static inline void vsink_reset (GstAmlVsink * sink)
   GstAmlVsinkPrivate *priv = sink->priv;
 
   priv->received_eos = FALSE;
+  priv->internal_err = FALSE;
   priv->eos = FALSE;
   priv->flushing_ = FALSE;
   priv->first_ts_set = FALSE;
@@ -1109,8 +1111,9 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     GST_INFO ("setup capture port");
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
-          &priv->hdr)) {
+          &priv->hdr, priv->is_2k_only)) {
       GST_ERROR("v4l_dec_config failed");
+      priv->internal_err = TRUE;
       goto exit;
     }
 
@@ -1627,6 +1630,12 @@ gst_aml_vsink_render (GstAmlVsink * sink, GstBuffer * buf)
 
   if (priv->flushing_) {
     ret = GST_FLOW_FLUSHING;
+    goto done;
+  }
+
+  if (priv->internal_err) {
+    GST_DEBUG_OBJECT (sink, "internal err, drop %llu",
+        GST_BUFFER_TIMESTAMP (buf));
     goto done;
   }
 
