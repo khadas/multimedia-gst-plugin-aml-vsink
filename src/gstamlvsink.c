@@ -1051,6 +1051,21 @@ after_eos:
   }
 }
 
+static void postErrorMessage(GstAmlVsink *sink, int errorCode, const char *errorText)
+{
+  GError *error= g_error_new_literal(GST_STREAM_ERROR, errorCode, errorText);
+
+  if (error) {
+    GstMessage *msg= gst_message_new_error (GST_OBJECT_CAST(sink), error, errorText);
+
+    g_print("amlvsink: postErrorMessage: code %d (%s)\n", errorCode, errorText);
+    GST_ERROR_OBJECT(sink, "postErrorMessage: code %d (%s)\n", errorCode, errorText);
+    if (msg)
+      gst_element_post_message(GST_ELEMENT_CAST(sink), msg);
+    g_error_free (error);
+  }
+}
+
 /* return false for retry, true for conitnue processing */
 static bool handle_v4l_event (GstAmlVsink *sink)
 {
@@ -1114,7 +1129,10 @@ static bool handle_v4l_event (GstAmlVsink *sink)
           &priv->hdr, priv->is_2k_only)) {
       GST_ERROR("v4l_dec_config failed");
       priv->internal_err = TRUE;
-      goto exit;
+      GST_OBJECT_UNLOCK (sink);
+      /* unlock before post message on bus */
+      postErrorMessage (sink, GST_STREAM_ERROR_DECODE, "unsupported resolution");
+      return false;
     }
 
     pthread_mutex_lock (&priv->res_lock);
