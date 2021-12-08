@@ -620,24 +620,7 @@ static void gst_aml_vsink_get_property (GObject * object, guint property_id,
   }
   case PROP_VIDEO_FRAME_DROP_NUM:
   {
-    /* do this work around before VMASTER mode is supported */
-    gint64 dur_ms = (priv->position - priv->first_ts)/1000000LL;
-    int frameCount = priv->rendered_frame_num + priv->dropped_frame_num;
-    int dropped;
-    gfloat framerate;
-
-    if (dur_ms)
-      framerate = (gfloat)frameCount*1000/ (gfloat)dur_ms;
-    else
-      framerate = 30.0;
-
-
-    if (priv->rate > 1 && framerate > 45.0 && frameCount > 30) {
-      dropped = frameCount - (int)(frameCount/priv->rate);
-    } else {
-      dropped = 0;
-    }
-    g_value_set_int(value, dropped);
+    g_value_set_int(value, priv->dropped_frame_num);
     break;
   }
   default:
