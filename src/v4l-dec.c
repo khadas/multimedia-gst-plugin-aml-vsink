@@ -493,9 +493,9 @@ exit:
   return NULL;
 }
 
-void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t num)
+int recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t num)
 {
-  int i, ret;
+  int i, ret, rel_num = 0;
 
   if (cb) {
     struct v4l2_requestbuffers req = {
@@ -518,6 +518,7 @@ void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t n
       if (!cb[i]->displayed) {
         if (cb[i]->drm_frame) {
           cb[i]->drm_frame->destroy(cb[i]->drm_frame);
+          rel_num++;
           GST_DEBUG ("free index %d", i);
         }
         free (cb[i]);
@@ -528,6 +529,7 @@ void recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t n
     }
     free (cb);
   }
+  return rel_num;
 }
 
 int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode)

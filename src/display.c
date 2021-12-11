@@ -431,7 +431,7 @@ static void * display_thread_func(void * arg)
   if (f_p1)
     display_cb(disp->priv, f_p1->pri_dec, false);
 
-  GST_INFO ("quit %s\n", __func__);
+  GST_INFO ("quit %s", __func__);
   return NULL;
 }
 

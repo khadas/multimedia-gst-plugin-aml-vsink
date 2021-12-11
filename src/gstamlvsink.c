@@ -130,6 +130,8 @@ struct _GstAmlVsinkPrivate
   int dropped_frame_num;
   int rendered_frame_num;
   gboolean last_res_frame;
+  int cb_alloc_num;
+  int cb_rel_num;
 
   /* trick play */
   gfloat rate;
@@ -460,6 +462,8 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->fd = -1;
   priv->pause_pts = -1;
   priv->render = NULL;
+  priv->cb_alloc_num = 0;
+  priv->cb_rel_num = 0;
 }
 
 static void
@@ -1098,7 +1102,9 @@ static bool handle_v4l_event (GstAmlVsink *sink)
 
       pthread_mutex_lock (&priv->res_lock);
       if (priv->capture_port_config) {
-        recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
+        gint rel_num = recycle_capture_port_buffer (priv->fd,
+                priv->cb, priv->cb_num);
+        priv->cb_rel_num += rel_num;
         priv->capture_port_config = FALSE;
         priv->cb = NULL;
         priv->cb_num = 0;
@@ -1129,6 +1135,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
       GST_ERROR ("setup capture fail");
       goto exit;
     }
+    priv->cb_alloc_num += priv->cb_num;
     priv->capture_port_config = TRUE;
     pthread_mutex_unlock (&priv->res_lock);
 
@@ -1787,7 +1794,9 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
 
   pthread_mutex_lock (&priv->res_lock);
   if (priv->capture_port_config) {
-    recycle_capture_port_buffer (priv->fd, priv->cb, priv->cb_num);
+    gint rel_num = recycle_capture_port_buffer (priv->fd,
+            priv->cb, priv->cb_num);
+    priv->cb_rel_num += rel_num;
     priv->capture_port_config = FALSE;
     priv->cb_num = 0;
     priv->cb = NULL;
@@ -1910,6 +1919,7 @@ gst_aml_vsink_change_state (GstElement * element,
       GST_OBJECT_LOCK (sink);
       display_engine_stop (priv->render);
       priv->render = NULL;
+      GST_WARNING("alloc %d rel %d", priv->cb_alloc_num, priv->cb_rel_num);
       GST_OBJECT_UNLOCK (sink);
       break;
     }
@@ -1939,9 +1949,10 @@ static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed)
 
   pthread_mutex_lock (&priv->res_lock);
   if (frame->free_on_recycle) {
-    GST_LOG ("free index %d\n", frame->buf.index);
+    GST_DEBUG ("free index %d", frame->buf.index);
     frame->drm_frame->destroy(frame->drm_frame);
     free(frame);
+    priv->cb_rel_num++;
     goto exit;
   }
 
@@ -1949,6 +1960,7 @@ static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed)
     GST_WARNING ("free index %d in wrong state fd %d configed %d", frame->buf.index,
         priv->fd, priv->capture_port_config);
     frame->drm_frame->destroy(frame->drm_frame);
+    priv->cb_rel_num++;
     free(frame);
     goto exit;
   }
