@@ -532,7 +532,7 @@ int recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t nu
   return rel_num;
 }
 
-int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode)
+int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode, bool only_2k)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -544,7 +544,9 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode)
   decParm->cfg.double_write_mode = dw_mode;
 
   if (fmt == V4L2_PIX_FMT_H264)
-    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS+1;
+    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS + 1;
+  else if (fmt == V4L2_PIX_FMT_AV1 && only_2k)
+    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS - 1;
   else if (fmt != V4L2_PIX_FMT_MPEG2 && fmt != V4L2_PIX_FMT_MPEG1)
     decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS;
 
