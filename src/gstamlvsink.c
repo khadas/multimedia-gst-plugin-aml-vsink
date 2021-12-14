@@ -68,6 +68,10 @@ struct _GstAmlVsinkPrivate
   /* scaling */
   gboolean scale_set;
   struct rect window;
+  struct rect stretch_window;
+  int stretch_mode;
+  int screen_w;
+  int screen_h;
 
   gboolean pip;
   gboolean is_2k_only;
@@ -112,9 +116,10 @@ struct _GstAmlVsinkPrivate
   int es_width;
   int es_height;
 
-  /* frame dimension */
+  /* visible dimension before double write */
   int visible_w;
   int visible_h;
+  /* linear frame dimension after double write */
   uint32_t coded_w;
   uint32_t coded_h;
 
@@ -150,6 +155,8 @@ enum
   PROP_PAUSE_PTS,
   PROP_SHOW_BLACK_FRAME,
   PROP_2K_VIDEO,
+  PROP_STRETCH_MODE,
+  PROP_SCREEN_SIZE,
   PROP_LAST
 };
 
@@ -238,6 +245,16 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_WINDOW_SET,
       g_param_spec_string ("rectangle", "rectangle",
         "Window Set Format: x,y,width,height",
+        NULL, G_PARAM_WRITABLE));
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_STRETCH_MODE,
+      g_param_spec_int ("stretch-mode", "stretch mode",
+        "0 (full screen, default), 1 (keep aspect ratio). Work together with screen-size",
+        0, 1, 0, G_PARAM_READWRITE));
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_SCREEN_SIZE,
+      g_param_spec_string ("screen-size", "screen size",
+        "Screen format: width,height. Used for scaling, work together with stretch-mode",
         NULL, G_PARAM_WRITABLE));
 
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_VIDEO_FRAME_DROP_NUM,
@@ -569,14 +586,28 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
     GST_WARNING_OBJECT(sink, "for 2k video %d", priv->is_2k_only);
     break;
   }
+  case PROP_SCREEN_SIZE:
+  {
+    const gchar *str = g_value_get_string (value);
+    gchar **parts = g_strsplit (str, ",", 2);
 
+    if (!parts[0] || !parts[1]) {
+      GST_ERROR("Bad screen properties string");
+    } else {
+      priv->screen_w = atoi(parts[0]);
+      priv->screen_h = atoi(parts[1]);
+      GST_WARNING_OBJECT (sink, "screen size %dx%d",
+              priv->screen_w, priv->screen_h);
+    }
+    break;
+  }
   case PROP_WINDOW_SET:
   {
     const gchar *str = g_value_get_string (value);
     gchar **parts = g_strsplit (str, ",", 4);
 
-    if ( !parts[0] || !parts[1] || !parts[2] || !parts[3] ) {
-      GST_ERROR( "Bad window properties string" );
+    if (!parts[0] || !parts[1] || !parts[2] || !parts[3]) {
+      GST_ERROR("Bad window properties string");
     } else {
       int nx, ny, nw, nh;
 
@@ -598,10 +629,16 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
         priv->window.h = nh;
         GST_OBJECT_UNLOCK ( sink );
 
-        GST_WARNING ("set window rect (%d,%d,%d,%d)\n", nx, ny, nw, nh);
+        GST_WARNING ("set window rect (%d,%d,%d,%d)", nx, ny, nw, nh);
       }
     }
     g_strfreev(parts);
+    break;
+  }
+  case PROP_STRETCH_MODE:
+  {
+    priv->stretch_mode = g_value_get_int (value);
+    GST_WARNING ("stretch mode %d", priv->stretch_mode);
     break;
   }
   default:
@@ -625,6 +662,11 @@ static void gst_aml_vsink_get_property (GObject * object, guint property_id,
   case PROP_VIDEO_FRAME_DROP_NUM:
   {
     g_value_set_int(value, priv->dropped_frame_num);
+    break;
+  }
+  case PROP_STRETCH_MODE:
+  {
+    g_value_set_int(value, priv->stretch_mode);
     break;
   }
   default:
@@ -1053,6 +1095,49 @@ static void postErrorMessage(GstAmlVsink *sink, int errorCode, const char *error
   }
 }
 
+static void update_stretch_window(GstAmlVsinkPrivate *priv)
+{
+  int32_t x, y, w, h;
+  int64_t cmp_w, cmp_h, delta;
+
+  if (!priv || priv->stretch_mode == 0)
+    return;
+
+  x = priv->window.x;
+  y = priv->window.y;
+  w = priv->window.w;
+  h = priv->window.h;
+
+  if (!w)
+    w = priv->screen_w;
+  if (!h)
+    h = priv->screen_h;
+
+  if (w && h) {
+    cmp_w = priv->visible_w * h;
+    cmp_h = priv->visible_h * w;
+
+    if (cmp_w > cmp_h) {
+      delta = h * cmp_h / cmp_w;
+      y += (h - delta) / 2;
+      h = (int32_t)delta;
+    } else if (cmp_w < cmp_h) {
+      delta = w * cmp_w / cmp_h;
+      x += (w - delta) / 2;
+      w = (int32_t)delta;
+    }
+  }
+
+  priv->stretch_window.x = x;
+  priv->stretch_window.y = y;
+  priv->stretch_window.w = w;
+  priv->stretch_window.h = h;
+  GST_WARNING ("stretch [%d %d %d %d] => [%d %d %d %d]",
+      priv->window.x, priv->window.y,
+      priv->window.w, priv->window.h,
+      x, y, w, h);
+}
+
 /* return false for retry, true for conitnue processing */
 static bool handle_v4l_event (GstAmlVsink *sink)
 {
@@ -1113,6 +1198,19 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     }
 
     GST_INFO ("setup capture port");
+
+    memset( &selection, 0, sizeof(selection) );
+    selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    selection.target = V4L2_SEL_TGT_COMPOSE;
+    rc = ioctl (priv->fd, VIDIOC_G_SELECTION, &selection);
+    if (rc) {
+      GST_ERROR ("fail to get visible dimension %d", errno);
+    }
+    priv->visible_w = selection.r.width;
+    priv->visible_h = selection.r.height;
+    GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
+    update_stretch_window(priv);
+
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
           &priv->hdr, priv->is_2k_only)) {
@@ -1146,17 +1244,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
       goto exit;
     }
 
-    memset( &selection, 0, sizeof(selection) );
-    selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    selection.target = V4L2_SEL_TGT_COMPOSE;
-    rc = ioctl (priv->fd, VIDIOC_G_SELECTION, &selection);
-    if (rc) {
-      GST_ERROR ("fail to get visible dimension %d", errno);
-    }
-    priv->visible_w = selection.r.width;
-    priv->visible_h = selection.r.height;
     priv->last_res_frame = FALSE;
-    GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
   } else if (event.type == V4L2_EVENT_EOS) {
     GST_WARNING_OBJECT (sink, "V4L EOS");
     pthread_mutex_lock (&priv->res_lock);
@@ -1276,6 +1364,7 @@ static gpointer video_decode_thread(gpointer data)
   while (!priv->quitVideoOutputThread) {
     gint64 frame_ts;
     struct capture_buffer *cb;
+    struct rect *win;
     struct pollfd pfd = {
         /* default blocking capture */
         .events =  POLLIN | POLLRDNORM | POLLPRI,
@@ -1366,7 +1455,12 @@ static gpointer video_decode_thread(gpointer data)
     cb->drm_frame->pts = gst_util_uint64_scale_int (frame_ts, PTS_90K, GST_SECOND);
 
     cb->displayed = true;
-    rc = display_engine_show (priv->render, cb->drm_frame, &priv->window);
+    if (priv->stretch_mode == 0)
+      win = &priv->window;
+    else
+      win = &priv->stretch_window;
+
+    rc = display_engine_show (priv->render, cb->drm_frame, win);
     if (rc)
       GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
     else
