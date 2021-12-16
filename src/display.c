@@ -32,6 +32,7 @@
 
 #include "aml_avsync.h"
 #include "aml_avsync_log.h"
+#include "aml_queue.h"
 #include "display.h"
 
 GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
@@ -39,8 +40,6 @@ GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
 
 struct video_disp {
   struct drm_display *drm;
-  bool started;
-  pthread_t disp_t;
   bool last_frame;
   int drm_mode_set;
   void *priv;
@@ -55,6 +54,15 @@ struct video_disp {
   /* avsync */
   void * avsync;
   int session;
+
+  /* display thread */
+  bool disp_started;
+  pthread_t disp_t;
+
+  /* recycle thread */
+  void * recycle_q;
+  bool recycle_started;
+  pthread_t recycle_t;
 };
 
 static struct drm_frame* create_black_frame (void* handle,
@@ -74,12 +82,19 @@ static void display_res_change_cb(void *p)
 
 void *display_engine_start(void* priv, bool pip)
 {
-  struct video_disp *disp;
+  struct video_disp *disp = NULL;
   struct drm_display *drm;
 
   disp = (struct video_disp *)calloc (1, sizeof(*disp));
   if (!disp) {
     GST_ERROR ("oom");
+    return NULL;
+  }
+
+  disp->recycle_q = create_q(32);
+  if (!disp->recycle_q) {
+    GST_ERROR ("recycle queue fail");
+    goto error;
   }
   drm = drm_display_init();
   if (!drm) {
@@ -331,7 +346,7 @@ void display_engine_stop(void *handle)
   struct video_disp* disp = handle;
   int rc;
 
-  disp->started = false;
+  disp->disp_started = false;
   if (disp->disp_t) {
     rc = pthread_join (disp->disp_t, NULL);
     if (rc)
@@ -346,6 +361,18 @@ void display_engine_stop(void *handle)
   }
   pthread_mutex_unlock (&disp->avsync_lock);
 
+  disp->recycle_started = false;
+  if (disp->recycle_t) {
+    rc = pthread_join (disp->recycle_t, NULL);
+    if (rc)
+      GST_ERROR ("join recycle thread %d", errno);
+    disp->recycle_t = 0;
+  }
+
+  if (disp->recycle_q) {
+    destroy_q(disp->recycle_q);
+    disp->recycle_q = NULL;
+  }
   destroy_black_frame (disp->black_frame);
   drm_destroy_display (disp->drm);
   pthread_mutex_destroy (&disp->avsync_lock);
@@ -355,14 +382,14 @@ void display_engine_stop(void *handle)
 static void * display_thread_func(void * arg)
 {
   struct video_disp *disp = arg;
-  struct drm_frame *f = NULL, *f_p1 = NULL, *f_p2 = NULL, *f_p3 = NULL;
+  struct drm_frame *f = NULL, *f_old = NULL;
   bool first_frame_rendered = false;
   drmVBlank vbl;
 
   prctl (PR_SET_NAME, "aml_v_dis");
   memset(&vbl, 0, sizeof(drmVBlank));
 
-  while (disp->started) {
+  while (disp->disp_started) {
     int rc;
     struct drm_buf* gem_buf;
     struct vframe *sync_frame = NULL;
@@ -395,7 +422,7 @@ static void * display_thread_func(void * arg)
       break;
     }
 
-    if (f != f_p1) {
+    if (f != f_old) {
       GST_LOG ("pop frame: %u", f->pts);
       gem_buf = f->buf;
 
@@ -410,26 +437,41 @@ static void * display_thread_func(void * arg)
         GST_ERROR ("drm_post_buf error %d", rc);
         continue;
       }
-      /* 2 fences delay on video layer, 1 fence delay on osd */
-      if (f_p3) {
-        f_p3->displayed = true;
-        display_cb(disp->priv, f_p3->pri_dec, true);
-        f_p3 = NULL;
+      rc = queue_item (disp->recycle_q, f);
+      if (rc) {
+        GST_ERROR ("queue fail %d qlen %d", rc, queue_size(disp->recycle_q));
+        display_cb(disp->priv, f->pri_dec, true);
       }
-
-      f_p3 = f_p2;
-      f_p2 = f_p1;
-      f_p1 = f;
+      f_old = f;
       first_frame_rendered = true;
     }
   }
+  GST_INFO ("quit %s", __func__);
+  return NULL;
+}
 
-  if (f_p3)
-    display_cb(disp->priv, f_p3->pri_dec, false);
-  if (f_p2)
-    display_cb(disp->priv, f_p2->pri_dec, false);
-  if (f_p1)
-    display_cb(disp->priv, f_p1->pri_dec, false);
+static void * recycle_thread_func(void * arg)
+{
+  struct video_disp *disp = arg;
+  struct drm_buf* gem_buf;
+  struct drm_frame *f = NULL;
+  int rc;
+
+  prctl (PR_SET_NAME, "aml_v_recy");
+  while (disp->recycle_started) {
+    if (dqueue_item(disp->recycle_q, (void **)&f)) {
+      usleep(5000);
+      continue;
+    }
+    gem_buf = f->buf;
+    rc = drm_waitvideoFence(gem_buf->fd[0]);
+    if (rc)
+      GST_WARNING ("wait fence error %d", rc);
+    display_cb(disp->priv, f->pri_dec, true);
+  }
+
+  while (!dqueue_item(disp->recycle_q, (void **)&f))
+    display_cb(disp->priv, f->pri_dec, false);
 
   GST_INFO ("quit %s", __func__);
   return NULL;
@@ -463,13 +505,20 @@ int display_engine_show(void* handle, struct drm_frame* frame, struct rect* wind
     return -1;
   }
 
-  if (!disp->started) {
-    disp->started = true;
+  if (!disp->disp_started) {
+    disp->disp_started = true;
     disp->last_frame = false;
 
     rc = pthread_create(&disp->disp_t, NULL, display_thread_func, disp);
     if (rc) {
       GST_ERROR ("create dispay thread fails\n");
+      return -1;
+    }
+
+    disp->recycle_started = true;
+    rc = pthread_create(&disp->recycle_t, NULL, recycle_thread_func, disp);
+    if (rc) {
+      GST_ERROR ("create recycle thread fails\n");
       return -1;
     }
   }
