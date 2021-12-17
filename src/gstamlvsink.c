@@ -128,6 +128,9 @@ struct _GstAmlVsinkPrivate
   /* visible dimension before double write */
   int visible_w;
   int visible_h;
+  /* pixel aspect ration */
+  int pixel_w;
+  int pixel_h;
   /* linear frame dimension after double write */
   uint32_t coded_w;
   uint32_t coded_h;
@@ -1175,8 +1178,8 @@ static void update_stretch_window(GstAmlVsinkPrivate *priv)
     h = priv->screen_h;
 
   if (w && h) {
-    cmp_w = priv->visible_w * h;
-    cmp_h = priv->visible_h * w;
+    cmp_w = priv->visible_w * priv->pixel_w * h;
+    cmp_h = priv->visible_h * priv->pixel_h * w;
 
     if (cmp_w > cmp_h) {
       delta = h * cmp_h / cmp_w;
@@ -1223,6 +1226,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
   {
     struct v4l2_selection selection;
     struct v4l2_format fmtOut;
+    struct v4l2_cropcap cropcap;
     int32_t type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
     GST_WARNING ("source change event");
@@ -1282,6 +1286,22 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     priv->visible_w = selection.r.width;
     priv->visible_h = selection.r.height;
     GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
+
+    memset(&cropcap, 0, sizeof(cropcap));
+    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    rc = ioctl (priv->fd, VIDIOC_CROPCAP, &cropcap);
+    if (rc) {
+      GST_ERROR ("fail to get cropcap %d", errno);
+    }
+    priv->pixel_w = cropcap.pixelaspect.denominator;
+    priv->pixel_h = cropcap.pixelaspect.numerator;
+    GST_DEBUG ("pixel aspect ratio %d:%d",  priv->pixel_w, priv->pixel_h);
+    if (!priv->pixel_w || !priv->pixel_h) {
+      priv->pixel_w = 1;
+      priv->pixel_h = 1;
+      GST_DEBUG ("force aspect ratio 1:1");
+    }
+
     update_stretch_window(priv);
 
     /* Enable DW scale for correct linear buffer size */
