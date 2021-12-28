@@ -46,6 +46,7 @@ struct drm_frame {
   void* pri_drm;
   struct vframe sync_frame;
   struct rect window;
+  struct rect source_window;
 };
 
 typedef int (*displayed_cb_func)(void* priv, void* handle, bool displayed);
@@ -61,7 +62,8 @@ struct drm_frame* display_create_buffer(void *handle,
         enum frame_format format, int planes_count,
         bool secure, bool pip);
 int display_get_buffer_fds(struct drm_frame *drm_f, int *fd, int cnt);
-int display_engine_show(void *handle, struct drm_frame* frame, struct rect *window);
+int display_engine_show(void *handle, struct drm_frame* frame,
+        struct rect *window, struct rect *src_window);
 int display_start_avsync(void *handle, enum sync_mode mode, int id);
 void display_stop_avsync(void *handle);
 int display_show_black_frame(void * handle);

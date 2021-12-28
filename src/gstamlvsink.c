@@ -45,6 +45,13 @@ GST_DEBUG_CATEGORY (gst_aml_vsink_debug);
 
 #define PTS_90K 90000
 
+struct src_rect {
+  float x;
+  float y;
+  float w;
+  float h;
+};
+
 struct _GstAmlVsinkPrivate
 {
   GstAmlVsink* sink;
@@ -72,6 +79,8 @@ struct _GstAmlVsinkPrivate
   int stretch_mode;
   int screen_w;
   int screen_h;
+  gboolean src_rec_set;
+  struct src_rect source_window;
 
   gboolean pip;
   gboolean is_2k_only;
@@ -148,6 +157,7 @@ struct _GstAmlVsinkPrivate
 enum
 {
   PROP_0,
+  PROP_SRC_WINDOW_SEL,
   PROP_WINDOW_SET,
   PROP_PIP_VIDEO,
   PROP_VIDEO_FRAME_DROP_NUM,
@@ -242,6 +252,11 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
   gobject_class->set_property = gst_aml_vsink_set_property;
   gobject_class->get_property = gst_aml_vsink_get_property;
   gobject_class->dispose = gst_aml_vsink_dispose;
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_SRC_WINDOW_SEL,
+      g_param_spec_string ("source-rec-select", "source rectangle selection",
+        "Window Set Format: x,y,width,height, each value is float between 0 to 1",
+        NULL, G_PARAM_WRITABLE));
 
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_WINDOW_SET,
       g_param_spec_string ("rectangle", "rectangle",
@@ -600,6 +615,49 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
       GST_WARNING_OBJECT (sink, "screen size %dx%d",
               priv->screen_w, priv->screen_h);
     }
+    break;
+  }
+  case PROP_SRC_WINDOW_SEL:
+  {
+    const gchar *str = g_value_get_string (value);
+    gchar **parts = g_strsplit (str, ",", 4);
+
+    if (!parts[0] || !parts[1] || !parts[2] || !parts[3]) {
+      GST_ERROR("Bad source window properties string");
+    } else {
+      float nx, ny, nw, nh;
+
+      nx = atof(parts[0]);
+      ny = atof(parts[1]);
+      nw = atof(parts[2]);
+      nh = atof(parts[3]);
+
+      if ((nx < 0 || nx > 1.0f) ||
+          (ny < 0 || ny > 1.0f) ||
+          (nw < 0 || nw > 1.0f) ||
+          (nh < 0 || nh > 1.0f))
+        GST_ERROR("Bad source window properties string");
+      else if ( (!priv->src_rec_set) ||
+          (nx != priv->source_window.x) ||
+          (ny != priv->source_window.y) ||
+          (nw != priv->source_window.w) ||
+          (nh != priv->source_window.h) ) {
+        if (nw == 0)
+          nw = 1.0f;
+        if (nh == 0)
+          nh = 1.0f;
+        GST_OBJECT_LOCK ( sink );
+        priv->src_rec_set = true;
+        priv->source_window.x = nx;
+        priv->source_window.y = ny;
+        priv->source_window.w = nw;
+        priv->source_window.h = nh;
+        GST_OBJECT_UNLOCK ( sink );
+
+        GST_WARNING ("set source window rect (%f,%f,%f,%f)", nx, ny, nw, nh);
+      }
+    }
+    g_strfreev(parts);
     break;
   }
   case PROP_WINDOW_SET:
@@ -1368,6 +1426,7 @@ static gpointer video_decode_thread(gpointer data)
     gint64 frame_ts;
     struct capture_buffer *cb;
     struct rect *win;
+    struct rect src_win;
     struct pollfd pfd = {
         /* default blocking capture */
         .events =  POLLIN | POLLRDNORM | POLLPRI,
@@ -1463,7 +1522,18 @@ static gpointer video_decode_thread(gpointer data)
     else
       win = &priv->stretch_window;
 
-    rc = display_engine_show (priv->render, cb->drm_frame, win);
+    GST_OBJECT_LOCK (sink);
+    if (priv->src_rec_set) {
+      src_win.x = priv->visible_w * priv->source_window.x;
+      src_win.y = priv->visible_h * priv->source_window.y;
+      src_win.w = priv->visible_w * priv->source_window.w;
+      src_win.h = priv->visible_h * priv->source_window.h;
+    } else {
+      memset (&src_win, 0, sizeof(struct rect));
+    }
+    GST_OBJECT_UNLOCK (sink);
+
+    rc = display_engine_show (priv->render, cb->drm_frame, win, &src_win);
     if (rc)
       GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
     else

@@ -507,7 +507,7 @@ int recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t nu
     ret = ioctl(fd, VIDIOC_REQBUFS, &req);
     if (ret) {
       GST_ERROR ("fail VIDIOC_REQBUFS %d",errno);
-      return;
+      return 0;
     }
 
     for (i = 0 ; i < num ; i++) {

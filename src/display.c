@@ -432,6 +432,11 @@ static void * display_thread_func(void * arg)
       gem_buf->crtc_w = f->window.w;
       gem_buf->crtc_h = f->window.h;
 
+      gem_buf->src_x = f->source_window.x;
+      gem_buf->src_y = f->source_window.y;
+      gem_buf->src_w = f->source_window.w;
+      gem_buf->src_h = f->source_window.h;
+
       rc = drm_post_buf (disp->drm, gem_buf);
       if (rc) {
         GST_ERROR ("drm_post_buf error %d", rc);
@@ -494,7 +499,8 @@ static void sync_frame_free(struct vframe * sync_frame)
     disp->last_frame = true;
 }
 
-int display_engine_show(void* handle, struct drm_frame* frame, struct rect* window)
+int display_engine_show(void* handle, struct drm_frame* frame,
+        struct rect* window, struct rect* src_window)
 {
   struct video_disp *disp = handle;
   int rc;
@@ -502,6 +508,10 @@ int display_engine_show(void* handle, struct drm_frame* frame, struct rect* wind
 
   if (!disp->avsync) {
     GST_ERROR ("avsync not started");
+    return -1;
+  }
+  if (!window || !src_window) {
+    GST_ERROR ("invalid window pointer");
     return -1;
   }
 
@@ -528,6 +538,7 @@ int display_engine_show(void* handle, struct drm_frame* frame, struct rect* wind
   sync_frame->duration = frame->duration;
   sync_frame->free = sync_frame_free;
   frame->window = *window;
+  frame->source_window = *src_window;
 
   rc = av_sync_push_frame(disp->avsync, sync_frame);
   if (!rc)
