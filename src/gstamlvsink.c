@@ -207,6 +207,7 @@ static void reset_decoder(GstAmlVsink *sink, bool hard);
 static gboolean check_vdec(GstAmlVsinkClass *klass);
 static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed);
 static int pause_pts_arrived(void* priv, uint32_t pts);
+static void update_stretch_window(GstAmlVsinkPrivate *priv);
 //static int get_sysfs_uint32(const char *path, uint32_t *value);
 //static int config_sys_node(const char* path, const char* value);
 #define DUMP_TO_FILE
@@ -627,6 +628,8 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
         priv->window.y = ny;
         priv->window.w = nw;
         priv->window.h = nh;
+        if (priv->visible_w && priv->visible_h)
+          update_stretch_window(priv);
         GST_OBJECT_UNLOCK ( sink );
 
         GST_WARNING ("set window rect (%d,%d,%d,%d)", nx, ny, nw, nh);
