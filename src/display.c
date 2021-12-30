@@ -465,7 +465,7 @@ static void * recycle_thread_func(void * arg)
     }
     gem_buf = f->buf;
     rc = drm_waitvideoFence(gem_buf->fd[0]);
-    if (rc)
+    if (rc <= 0)
       GST_WARNING ("wait fence error %d", rc);
     display_cb(disp->priv, f->pri_dec, true);
   }
