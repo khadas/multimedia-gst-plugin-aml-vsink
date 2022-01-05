@@ -2110,7 +2110,7 @@ static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed)
     return -1;
   }
 
-  if (!frame->drm_frame->displayed)
+  if (!displayed)
     priv->dropped_frame_num++;
   else
     priv->rendered_frame_num++;

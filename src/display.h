@@ -39,8 +39,6 @@ struct drm_frame {
   void *vaddr; /* for black frame use only */
   uint32_t pts;
   void* pri_sync;
-  /* false is dropped by avsync */
-  bool displayed;
   uint32_t duration;
   void* pri_dec;
   void* pri_drm;

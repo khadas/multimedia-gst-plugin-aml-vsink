@@ -492,10 +492,9 @@ static void sync_frame_free(struct vframe * sync_frame)
     return;
   }
 
-  if (drm_f) {
-    drm_f->displayed = false;
+  if (drm_f)
     display_cb(disp->priv, drm_f->pri_dec, false);
-  } else
+  else
     disp->last_frame = true;
 }
 
