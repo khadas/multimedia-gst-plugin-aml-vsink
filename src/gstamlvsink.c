@@ -1260,6 +1260,18 @@ static bool handle_v4l_event (GstAmlVsink *sink)
 
     GST_INFO ("setup capture port");
 
+    /* Disable DW scale to get correct visible dimension for scaling */
+    if (v4l_dec_config(priv->fd, priv->secure,
+          priv->output_format, priv->dw_mode,
+          &priv->hdr, priv->is_2k_only, true)) {
+      GST_ERROR("v4l_dec_config failed");
+      priv->internal_err = TRUE;
+      GST_OBJECT_UNLOCK (sink);
+      /* unlock before post message on bus */
+      postErrorMessage (sink, GST_STREAM_ERROR_DECODE, "unsupported resolution");
+      return false;
+    }
+
     memset( &selection, 0, sizeof(selection) );
     selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     selection.target = V4L2_SEL_TGT_COMPOSE;
@@ -1272,9 +1284,10 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
     update_stretch_window(priv);
 
+    /* Enable DW scale for correct linear buffer size */
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
-          &priv->hdr, priv->is_2k_only)) {
+          &priv->hdr, priv->is_2k_only, false)) {
       GST_ERROR("v4l_dec_config failed");
       priv->internal_err = TRUE;
       GST_OBJECT_UNLOCK (sink);

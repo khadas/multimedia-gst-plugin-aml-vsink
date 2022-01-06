@@ -558,7 +558,7 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode, bool only_2k)
 }
 
 int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
-    struct hdr_meta *hdr, bool is_2k_only)
+    struct hdr_meta *hdr, bool is_2k_only, bool disable_dw_scale)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -593,7 +593,8 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   if (fmt != V4L2_PIX_FMT_MPEG2)
     decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS;
   decParm->cfg.metadata_config_flag |= (1 << 12);
-  decParm->cfg.metadata_config_flag |= (1 << 13);
+  if (!disable_dw_scale)
+    decParm->cfg.metadata_config_flag |= (1 << 13);
 
 
 	if (hdr->haveColorimetry || hdr->haveMasteringDisplay ||
