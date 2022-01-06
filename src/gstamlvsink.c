@@ -1529,7 +1529,10 @@ static gpointer video_decode_thread(gpointer data)
       src_win.w = priv->visible_w * priv->source_window.w;
       src_win.h = priv->visible_h * priv->source_window.h;
     } else {
-      memset (&src_win, 0, sizeof(struct rect));
+      src_win.x = 0;
+      src_win.y = 0;
+      src_win.w = priv->visible_w;
+      src_win.h = priv->visible_h;
     }
     GST_OBJECT_UNLOCK (sink);
 
