@@ -62,7 +62,7 @@ struct drm_frame* display_create_buffer(void *handle,
 int display_get_buffer_fds(struct drm_frame *drm_f, int *fd, int cnt);
 int display_engine_show(void *handle, struct drm_frame* frame,
         struct rect *window, struct rect *src_window);
-int display_start_avsync(void *handle, enum sync_mode mode, int id);
+int display_start_avsync(void *handle, enum sync_mode mode, int id, int delay);
 void display_stop_avsync(void *handle);
 int display_show_black_frame(void * handle);
 

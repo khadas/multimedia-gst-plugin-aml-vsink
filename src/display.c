@@ -129,7 +129,7 @@ static void pause_pts_cb(uint32_t pts, void* priv)
   disp->pause_pts = -1;
 }
 
-int display_start_avsync(void *handle, enum sync_mode mode, int id)
+int display_start_avsync(void *handle, enum sync_mode mode, int id, int delay)
 {
   struct video_disp * disp = handle;
   int ret = 0;
@@ -156,7 +156,9 @@ int display_start_avsync(void *handle, enum sync_mode mode, int id)
     goto exit;
   }
 
+  memset(&config, 0, sizeof(struct video_config));
   config.delay = 2;
+  config.extra_delay = delay;
   av_sync_video_config(disp->avsync, &config);
 
   if (disp->speed_pending) {

@@ -117,6 +117,7 @@ struct _GstAmlVsinkPrivate
   enum sync_mode avsync_mode;
   gboolean avsync_paused;
   int sessionId;
+  uint32_t delay;
 
   GstCaps *caps;
 
@@ -170,6 +171,7 @@ enum
   PROP_2K_VIDEO,
   PROP_STRETCH_MODE,
   PROP_SCREEN_SIZE,
+  PROP_RENDER_DELAY,
   PROP_LAST
 };
 
@@ -305,6 +307,11 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
       g_param_spec_boolean ("video-2k", "video 2k",
         "only support 2K video",
         FALSE, G_PARAM_WRITABLE));
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_RENDER_DELAY,
+      g_param_spec_uint ("render-delay", "render delay",
+        "extra render delay in milliseconds",
+        0, G_MAXUINT, 0, G_PARAM_READWRITE));
 
   g_signals[SIGNAL_FIRSTFRAME]= g_signal_new( "first-video-frame-callback",
       G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
@@ -557,6 +564,12 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
   GstAmlVsinkPrivate *priv = sink->priv;
 
   switch (property_id) {
+  case PROP_RENDER_DELAY:
+  {
+    priv->delay = g_value_get_uint (value);
+    GST_WARNING_OBJECT (sink, "render delay %u ms", priv->delay);
+    break;
+  }
   case PROP_PAUSE_PTS:
   {
     GST_OBJECT_LOCK ( sink );
@@ -718,6 +731,11 @@ static void gst_aml_vsink_get_property (GObject * object, guint property_id,
   GstAmlVsinkPrivate *priv = sink->priv;
 
   switch (property_id) {
+  case PROP_RENDER_DELAY:
+  {
+    g_value_set_uint(value, priv->delay);
+    break;
+  }
   case PROP_PAUSE_PTS:
   {
     g_value_set_uint(value, priv->pause_pts);
@@ -1448,7 +1466,7 @@ static gpointer video_decode_thread(gpointer data)
 
     rc = display_start_avsync (priv->render,
             priv->avsync_mode,
-            priv->sessionId);
+            priv->sessionId, priv->delay);
     if (rc) {
       GST_ERROR ("start avsync error");
       goto exit;
