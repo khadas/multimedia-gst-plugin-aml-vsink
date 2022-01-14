@@ -1688,6 +1688,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
   int index;
   int rc;
   struct output_buffer *ob;
+  GstFlowReturn ret = GST_FLOW_OK;
 
   mem = gst_buffer_peek_memory (buf, 0);
   if (!priv->output_port_config) {
@@ -1747,9 +1748,8 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
 
   GST_OBJECT_LOCK (sink);
   if (!priv->ob) {
-    GST_OBJECT_UNLOCK (sink);
     GST_INFO ("in stopping sequence, drop buffer");
-    goto exit;
+    goto unlock_exit;
   }
   ob = priv->ob[index];
 
@@ -1788,9 +1788,8 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       gsize copylen;
 
       if ( priv->flushing_) {
-        GST_OBJECT_UNLOCK (sink);
         GST_WARNING_OBJECT (sink, "drop frame in flushing");
-        goto exit;
+        goto unlock_exit;
       }
 
       copylen = ob->size;
@@ -1808,9 +1807,8 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       ob->buf.m.planes[0].bytesused = copylen;
       rc = ioctl (priv->fd, VIDIOC_QBUF, &ob->buf);
       if (rc) {
-        GST_OBJECT_UNLOCK (sink);
         GST_ERROR("queuing output buffer failed: rc %d errno %d", rc, errno);
-        goto exit;
+        goto unlock_exit;
       }
       ob->queued = true;
       GST_LOG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copylen, GST_BUFFER_PTS(buf));
@@ -1827,28 +1825,30 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     }
     gst_buffer_unmap (buf, &map);
   }
-  GST_OBJECT_UNLOCK (sink);
 
   priv->in_frame_cnt++;
 
-  if (!priv->output_start) {
+  if (!priv->output_start && !priv->flushing_) {
     uint32_t type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
 
     GST_INFO ("output VIDIOC_STREAMON");
     rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
     if (rc) {
       GST_ERROR ("streamon failed for output: rc %d errno %d", rc, errno );
-      return GST_FLOW_ERROR;
+      ret = GST_FLOW_ERROR;
+      goto unlock_exit;
     }
 
     if (start_video_thread (sink)) {
       GST_ERROR("start_video_thread failed");
-      return GST_FLOW_ERROR;
+      ret = GST_FLOW_ERROR;
     }
   }
 
+unlock_exit:
+  GST_OBJECT_UNLOCK (sink);
 exit:
-  return GST_FLOW_OK;
+  return ret;
 }
 
 static GstFlowReturn
