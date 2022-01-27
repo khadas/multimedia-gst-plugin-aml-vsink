@@ -444,15 +444,23 @@ static void * display_thread_func(void * arg)
         GST_ERROR ("drm_post_buf error %d", rc);
         continue;
       }
-      rc = queue_item (disp->recycle_q, f);
-      if (rc) {
-        GST_ERROR ("queue fail %d qlen %d", rc, queue_size(disp->recycle_q));
-        display_cb(disp->priv, f->pri_dec, true);
+      /* when next frame is posted, fence can be retrieved.
+       * So introduce one frame delay here
+       */
+      if (f_old) {
+        rc = queue_item (disp->recycle_q, f_old);
+        if (rc) {
+          GST_ERROR ("queue fail %d qlen %d", rc, queue_size(disp->recycle_q));
+          display_cb(disp->priv, f->pri_dec, true);
+        }
+        f_old->wait_recycle = true;
       }
       f_old = f;
       first_frame_rendered = true;
     }
   }
+  if (f_old && !f_old->wait_recycle)
+     display_cb(disp->priv, f->pri_dec, true);
   GST_INFO ("quit %s", __func__);
   return NULL;
 }
@@ -471,14 +479,17 @@ static void * recycle_thread_func(void * arg)
       continue;
     }
     gem_buf = f->buf;
+    f->wait_recycle = false;
     rc = drm_waitvideoFence(gem_buf->fd[0]);
     if (rc <= 0)
       GST_WARNING ("wait fence error %d", rc);
     display_cb(disp->priv, f->pri_dec, true);
   }
 
-  while (!dqueue_item(disp->recycle_q, (void **)&f))
+  while (!dqueue_item(disp->recycle_q, (void **)&f)) {
+    f->wait_recycle = false;
     display_cb(disp->priv, f->pri_dec, false);
+  }
 
   GST_INFO ("quit %s", __func__);
   return NULL;
