@@ -45,6 +45,7 @@ struct drm_frame {
   struct vframe sync_frame;
   struct rect window;
   struct rect source_window;
+  bool wait_recycle;
 };
 
 typedef int (*displayed_cb_func)(void* priv, void* handle, bool displayed);
