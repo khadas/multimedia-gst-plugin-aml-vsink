@@ -444,22 +444,22 @@ static void * display_thread_func(void * arg)
         GST_ERROR ("drm_post_buf error %d", rc);
         continue;
       }
-      f_old_old = f_old;
-      f_old = f;
-      first_frame_rendered = true;
-      /* when next two frame is posted, fence can be retrieved.
+      /* when next two frame are posted, fence can be retrieved.
        * So introduce two frames delay here
        */
       if (f_old_old) {
         rc = queue_item (disp->recycle_q, f_old_old);
         if (rc) {
           GST_ERROR ("queue fail %d qlen %d", rc, queue_size(disp->recycle_q));
-          display_cb(disp->priv, f->pri_dec, true);
+          display_cb(disp->priv, f_old_old->pri_dec, true);
         } else {
           f_old_old->wait_recycle = true;
         }
       }
 
+      f_old_old = f_old;
+      f_old = f;
+      first_frame_rendered = true;
     }
   }
   if (f_old_old && !f_old_old->wait_recycle)
