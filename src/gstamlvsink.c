@@ -150,6 +150,9 @@ struct _GstAmlVsinkPrivate
   gboolean last_res_frame;
   int cb_alloc_num;
   int cb_rel_num;
+  gboolean is_underflow_check;
+  /* buffer underflow happened */
+  gboolean buf_underflow_fired;
 
   /* trick play */
   gfloat rate;
@@ -172,6 +175,7 @@ enum
   PROP_STRETCH_MODE,
   PROP_SCREEN_SIZE,
   PROP_RENDER_DELAY,
+  PROP_UNDERFLOW_CHECK,
   PROP_LAST
 };
 
@@ -194,6 +198,7 @@ enum
 {
   SIGNAL_FIRSTFRAME,
   SIGNAL_PAUSEPTS,
+  SIGNAL_UNDERFLOW,
   MAX_SIGNAL
 };
 static guint g_signals[MAX_SIGNAL]= {0};
@@ -225,6 +230,7 @@ static int pause_pts_arrived(void* priv, uint32_t pts);
 static void update_stretch_window(GstAmlVsinkPrivate *priv);
 //static int get_sysfs_uint32(const char *path, uint32_t *value);
 //static int config_sys_node(const char* path, const char* value);
+static int buffer_underflow_happened(void* handle, uint32_t pts);
 #define DUMP_TO_FILE
 #ifdef DUMP_TO_FILE
 static guint file_index;
@@ -313,6 +319,11 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
         "extra render delay in milliseconds",
         0, G_MAXUINT, 0, G_PARAM_READWRITE));
 
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_UNDERFLOW_CHECK,
+      g_param_spec_boolean ("check-buffer-underflow", "check buffer underflow",
+        "support buffer underflow call back",
+        FALSE, G_PARAM_WRITABLE));
+
   g_signals[SIGNAL_FIRSTFRAME]= g_signal_new( "first-video-frame-callback",
       G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
       (GSignalFlags) (G_SIGNAL_RUN_LAST),
@@ -326,6 +337,18 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
       G_TYPE_POINTER );
 
   g_signals[SIGNAL_PAUSEPTS]= g_signal_new( "pause-pts-callback",
+      G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
+      (GSignalFlags) (G_SIGNAL_RUN_LAST),
+      0,    /* class offset */
+      NULL, /* accumulator */
+      NULL, /* accu data */
+      g_cclosure_marshal_VOID__UINT_POINTER,
+      G_TYPE_NONE,
+      2,
+      G_TYPE_UINT,
+      G_TYPE_POINTER);
+
+  g_signals[SIGNAL_UNDERFLOW]= g_signal_new( "buffer-underflow-callback",
       G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
       (GSignalFlags) (G_SIGNAL_RUN_LAST),
       0,    /* class offset */
@@ -507,6 +530,8 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->render = NULL;
   priv->cb_alloc_num = 0;
   priv->cb_rel_num = 0;
+  priv->is_underflow_check = FALSE;
+  priv->buf_underflow_fired = FALSE;
 }
 
 static void
@@ -716,6 +741,12 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
   {
     priv->stretch_mode = g_value_get_int (value);
     GST_WARNING ("stretch mode %d", priv->stretch_mode);
+    break;
+  }
+  case PROP_UNDERFLOW_CHECK:
+  {
+    priv->is_underflow_check = g_value_get_boolean (value);
+    GST_WARNING ("check buffer underflow %d", priv->is_underflow_check);
     break;
   }
   default:
@@ -941,6 +972,7 @@ static inline void vsink_reset (GstAmlVsink * sink)
   priv->output_port_config = FALSE;
   priv->output_start = FALSE;
   priv->capture_port_config = FALSE;
+  priv->buf_underflow_fired = FALSE;
 }
 
 static gpointer video_eos_thread(gpointer data)
@@ -1962,6 +1994,12 @@ static GstStateChangeReturn ready_to_pause(GstAmlVsink *sink)
     priv->pause_pts = -1;
   }
 
+  display_set_checkunderflow(priv->render, priv->is_underflow_check);
+  if (priv->is_underflow_check)
+    display_underflow_register_cb(buffer_underflow_happened);
+  else
+    display_underflow_register_cb(NULL);
+
   priv->paused = TRUE;
   priv->avsync_paused = FALSE;
   priv->quit_eos_wait = FALSE;
@@ -2063,6 +2101,7 @@ static GstStateChangeReturn pause_to_ready(GstAmlVsink *sink)
   GST_OBJECT_LOCK (sink);
   vsink_reset (sink);
   priv->pause_pts = -1;
+  display_underflow_register_cb(NULL);
   GST_OBJECT_UNLOCK (sink);
 
   return GST_STATE_CHANGE_SUCCESS;
@@ -2108,6 +2147,7 @@ gst_aml_vsink_change_state (GstElement * element,
       GST_INFO_OBJECT(sink, "paused to playing avsync_paused %d", priv->avsync_paused);
       GST_OBJECT_LOCK (sink);
       priv->paused = FALSE;
+      priv->buf_underflow_fired = FALSE;
       if (priv->avsync_paused) {
         display_set_pause (priv->render, false);
         priv->avsync_paused = false;
@@ -2217,6 +2257,32 @@ static int pause_pts_arrived(void* handle, uint32_t pts)
 
   GST_WARNING_OBJECT (sink, "emit pause pts signal %u", pts);
   g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_PAUSEPTS], 0, pts, NULL);
+  return 0;
+}
+
+static int buffer_underflow_happened(void* handle, uint32_t pts)
+{
+
+  GstAmlVsinkPrivate *priv = handle;
+  GstAmlVsink *sink = priv->sink;
+  bool new_underflow = FALSE;
+
+  GST_WARNING ("Receive underflow %u", pts);
+
+  if (!priv->paused && !priv->flushing_ &&
+      !priv->received_eos && priv->out_frame_cnt) {
+    GST_OBJECT_LOCK (sink);
+    if (priv->buf_underflow_fired == FALSE) {
+      GST_WARNING_OBJECT (sink, "underflow happend position %lld pts %u", priv->position, pts);
+      priv->buf_underflow_fired = TRUE;
+      new_underflow = TRUE;
+    }
+    GST_OBJECT_UNLOCK (sink);
+  }
+  if (new_underflow) {
+    GST_WARNING_OBJECT (sink, "emit underflow pts signal pos %lld pts %u", priv->position, pts);
+    g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_UNDERFLOW], 0, 2, NULL);
+  }
   return 0;
 }
 

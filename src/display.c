@@ -45,7 +45,9 @@ struct video_disp {
   void *priv;
   pthread_mutex_t avsync_lock;
   uint32_t pause_pts;
+  bool check_underflow;
   struct drm_frame *black_frame;
+
 
   /* trick play */
   bool speed_pending;
@@ -72,6 +74,7 @@ static int frame_destroy(struct drm_frame* drm_f);
 
 displayed_cb_func display_cb;
 pause_cb_func pause_cb;
+underflow_cb_func underflow_cb;
 
 static void display_res_change_cb(void *p)
 {
@@ -129,6 +132,14 @@ static void pause_pts_cb(uint32_t pts, void* priv)
   disp->pause_pts = -1;
 }
 
+static void underflow_check_cb(uint32_t pts, void* priv)
+{
+  struct video_disp * disp = priv;
+
+  if (underflow_cb)
+    underflow_cb (disp->priv, pts);
+}
+
 int display_start_avsync(void *handle, enum sync_mode mode, int id, int delay)
 {
   struct video_disp * disp = handle;
@@ -170,6 +181,10 @@ int display_start_avsync(void *handle, enum sync_mode mode, int id, int delay)
   if (disp->pause_pts != -1) {
     av_sync_set_pause_pts_cb (disp->avsync, pause_pts_cb, disp);
     av_sync_set_pause_pts (disp->avsync, disp->pause_pts);
+  }
+  if (disp->check_underflow) {
+    GST_WARNING ("set check_underflow");
+    av_sync_set_underflow_check_cb (disp->avsync, underflow_check_cb, disp, NULL);
   }
   return 0;
 
@@ -573,6 +588,19 @@ int display_engine_register_cb(displayed_cb_func cb)
 int pause_pts_register_cb(pause_cb_func cb)
 {
   pause_cb = cb;
+  return 0;
+}
+
+int display_underflow_register_cb(underflow_cb_func cb)
+{
+  underflow_cb = cb;
+  return 0;
+}
+int display_set_checkunderflow(void *handle, bool underflow_check)
+{
+  struct video_disp *disp = handle;
+
+  disp->check_underflow = underflow_check;
   return 0;
 }
 

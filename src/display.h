@@ -50,11 +50,13 @@ struct drm_frame {
 
 typedef int (*displayed_cb_func)(void* priv, void* handle, bool displayed);
 typedef int (*pause_cb_func)(void* priv, uint32_t pts);
+typedef int (*underflow_cb_func)(void* priv, uint32_t pts);
 
 void *display_engine_start(void* priv, bool pip);
 void display_engine_stop(void * handle);
 int display_engine_register_cb(displayed_cb_func cb);
 int pause_pts_register_cb(pause_cb_func cb);
+int display_underflow_register_cb(underflow_cb_func cb);
 
 struct drm_frame* display_create_buffer(void *handle,
         unsigned int width, unsigned int height,
@@ -70,4 +72,5 @@ int display_show_black_frame(void * handle);
 int display_set_pause(void *handle, bool pause);
 int display_set_pause_pts(void *handle, uint32_t pause_pts);
 int display_set_speed(void *handle, float speed);
+int display_set_checkunderflow(void *handle, bool underflow_check);
 #endif
