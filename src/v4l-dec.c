@@ -584,6 +584,10 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
       return -1;
     }
   }
+  if (w <= 0 || h <= 0) {
+      GST_ERROR ("invalid size %dx%d", w, h);
+      return -1;
+  }
 
   memset (&streamparm, 0, sizeof(streamparm));
   streamparm.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
