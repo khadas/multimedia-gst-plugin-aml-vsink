@@ -39,6 +39,7 @@
 #include "gstamlvsink.h"
 #include "v4l-dec.h"
 #include "display.h"
+#include "aml_version.h"
 
 GST_DEBUG_CATEGORY (gst_aml_vsink_debug);
 #define GST_CAT_DEFAULT gst_aml_vsink_debug
