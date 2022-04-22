@@ -1588,6 +1588,7 @@ static gpointer video_decode_thread(gpointer data)
     if (priv->out_frame_cnt == 0 && !priv->flushing_) {
       GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld", frame_ts);
       g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_FIRSTFRAME], 0, 2, NULL);
+      GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld done", frame_ts);
     }
 
     priv->out_frame_cnt++;
@@ -2258,6 +2259,34 @@ static int pause_pts_arrived(void* handle, uint32_t pts)
 
   GST_WARNING_OBJECT (sink, "emit pause pts signal %u", pts);
   g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_PAUSEPTS], 0, pts, NULL);
+  GST_WARNING_OBJECT (sink, "emit pause pts signal %u done", pts);
+  return 0;
+}
+
+static int buffer_underflow_happened(void* handle, uint32_t pts)
+{
+
+  GstAmlVsinkPrivate *priv = handle;
+  GstAmlVsink *sink = priv->sink;
+  bool new_underflow = FALSE;
+
+  GST_WARNING ("Receive underflow %u", pts);
+
+  if (!priv->paused && !priv->flushing_ &&
+      !priv->received_eos && priv->out_frame_cnt) {
+    GST_OBJECT_LOCK (sink);
+    if (priv->buf_underflow_fired == FALSE) {
+      GST_WARNING_OBJECT (sink, "underflow happend position %lld pts %u", priv->position, pts);
+      priv->buf_underflow_fired = TRUE;
+      new_underflow = TRUE;
+    }
+    GST_OBJECT_UNLOCK (sink);
+  }
+  if (new_underflow) {
+    GST_WARNING_OBJECT (sink, "emit underflow pts signal pos %lld pts %u", priv->position, pts);
+    g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_UNDERFLOW], 0, 2, NULL);
+    GST_WARNING_OBJECT (sink, "emit underflow pts signal pos %lld pts %u done", priv->position, pts);
+  }
   return 0;
 }
 
