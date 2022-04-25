@@ -126,6 +126,9 @@ struct _GstAmlVsinkPrivate
   double fr;
   int es_width;
   int es_height;
+  guint8 *codec_data;
+  int codec_data_len;
+  gboolean codec_data_injected;
 
   /* visible dimension before double write */
   int visible_w;
@@ -533,6 +536,7 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->cb_rel_num = 0;
   priv->is_underflow_check = FALSE;
   priv->buf_underflow_fired = FALSE;
+  priv->codec_data = NULL;
 }
 
 static void
@@ -827,6 +831,9 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
     if (gst_structure_get_int (structure, "mpegversion", &version)
       && version == 2)
       priv->output_format = V4L2_PIX_FMT_MPEG2;
+    else if (gst_structure_get_int (structure, "mpegversion", &version)
+      && version == 4)
+      priv->output_format = V4L2_PIX_FMT_MPEG4;
   } else if (len == 12 && !strncmp ("video/x-h265", mime, len))
     priv->output_format = V4L2_PIX_FMT_HEVC;
   else if (len == 11 && !strncmp ("video/x-vp9", mime, len))
@@ -837,6 +844,44 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   if (priv->output_format == -1) {
     GST_ERROR("not accepting format(%s)", mime );
     goto error;
+  }
+
+  /* codec data */
+  if (gst_structure_has_field (structure, "codec_data")) {
+    const GValue *value= gst_structure_get_value (structure, "codec_data");
+
+    if (value) {
+      GstBuffer *buf = gst_value_get_buffer(value);
+
+      if (buf) {
+        GstMapInfo map;
+        gboolean has_error = FALSE;
+
+        if (gst_buffer_map(buf, &map, GST_MAP_READ)) {
+          GST_OBJECT_LOCK (sink);
+          if (priv->codec_data) {
+            free(priv->codec_data);
+            priv->codec_data = NULL;
+            priv->codec_data_len = 0;
+          }
+          priv->codec_data = (guint8*) malloc(map.size);
+          if (priv->codec_data) {
+            memcpy(priv->codec_data, map.data, map.size);
+            priv->codec_data_len = map.size;
+            priv->codec_data_injected = FALSE;
+          } else {
+            GST_ERROR("no memory for codec data size %d", map.size);
+            has_error = TRUE;
+          }
+          GST_OBJECT_UNLOCK ( sink );
+          gst_buffer_unmap(buf, &map);
+          if (has_error)
+            goto error;
+        } else {
+          GST_ERROR("gst_buffer_map failed for codec data");
+        }
+      }
+    }
   }
 
   /* frame rate */
@@ -1790,6 +1835,13 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
   if (priv->output_mode == V4L2_MEMORY_DMABUF) {
     gsize dataOffset, maxSize;
 
+    if (priv->codec_data) {
+      GST_WARNING("have unexpected codec data when using dma-buf for input");
+      free(priv->codec_data);
+      priv->codec_data = NULL;
+      priv->codec_data_len = 0;
+    }
+
     if (GST_BUFFER_PTS_IS_VALID (buf))
       GST_TIME_TO_TIMEVAL (GST_BUFFER_PTS(buf), ob->buf.timestamp);
 
@@ -1819,41 +1871,51 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     inData = map.data;
 
     if (inSize) {
-      gsize copylen;
+      gsize copylen = 0, copied = 0;
 
       if ( priv->flushing_) {
         GST_WARNING_OBJECT (sink, "drop frame in flushing");
         goto unlock_exit;
       }
 
-      copylen = ob->size;
-      if (copylen >= inSize)
-        copylen = inSize;
-      else
+      if (priv->codec_data && !priv->codec_data_injected) {
+        GST_DEBUG_OBJECT (sink, "injecting %d bytes codec data", priv->codec_data_len);
+        memcpy (ob->vaddr, priv->codec_data, priv->codec_data_len);
+        ob->vaddr += priv->codec_data_len;
+        priv->codec_data_injected = TRUE;
+        copied += priv->codec_data_len;
+      }
+
+      if (copied + inSize > ob->size) {
         GST_WARNING_OBJECT (sink, "sample too big %d vs %d", copylen, inSize);
+        copylen = ob->size;
+      } else {
+        copylen = inSize;
+      }
 
       memcpy (ob->vaddr, inData, copylen);
+      copied += copylen;
 
       if (GST_BUFFER_PTS_IS_VALID(buf))
         GST_TIME_TO_TIMEVAL(GST_BUFFER_PTS(buf), ob->buf.timestamp);
 
-      ob->buf.bytesused = copylen;
-      ob->buf.m.planes[0].bytesused = copylen;
+      ob->buf.bytesused = copied;
+      ob->buf.m.planes[0].bytesused = copied;
       rc = ioctl (priv->fd, VIDIOC_QBUF, &ob->buf);
       if (rc) {
         GST_ERROR("queuing output buffer failed: rc %d errno %d", rc, errno);
         goto unlock_exit;
       }
       ob->queued = true;
-      GST_LOG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copylen, GST_BUFFER_PTS(buf));
+      GST_LOG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copied, GST_BUFFER_PTS(buf));
 #ifdef DUMP_TO_FILE
       if (getenv("AML_VSINK_ES_DUMP")) {
         uint32_t pts32;
         pts32 = gst_util_uint64_scale_int (GST_BUFFER_PTS(buf), PTS_90K, GST_SECOND);
-        dump ("/tmp/amlvsink", inData, copylen,
+        dump ("/tmp/amlvsink", inData, copied,
             priv->output_format == V4L2_PIX_FMT_VP9,
             priv->in_frame_cnt);
-        GST_INFO ("dump len %d ts %x", copylen, pts32);
+        GST_INFO ("dump len %d ts %x", copied, pts32);
       }
 #endif
     }
@@ -2079,6 +2141,12 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
     pthread_mutex_unlock (&priv->res_lock);
   }
   priv->last_res_frame = FALSE;
+
+  if (priv->codec_data) {
+     free (priv->codec_data);
+     priv->codec_data_len = 0;
+     priv->codec_data_injected = FALSE;
+  }
   GST_INFO_OBJECT (sink, "decoder reset hard %d", hard);
 }
 
@@ -2260,33 +2328,6 @@ static int pause_pts_arrived(void* handle, uint32_t pts)
   GST_WARNING_OBJECT (sink, "emit pause pts signal %u", pts);
   g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_PAUSEPTS], 0, pts, NULL);
   GST_WARNING_OBJECT (sink, "emit pause pts signal %u done", pts);
-  return 0;
-}
-
-static int buffer_underflow_happened(void* handle, uint32_t pts)
-{
-
-  GstAmlVsinkPrivate *priv = handle;
-  GstAmlVsink *sink = priv->sink;
-  bool new_underflow = FALSE;
-
-  GST_WARNING ("Receive underflow %u", pts);
-
-  if (!priv->paused && !priv->flushing_ &&
-      !priv->received_eos && priv->out_frame_cnt) {
-    GST_OBJECT_LOCK (sink);
-    if (priv->buf_underflow_fired == FALSE) {
-      GST_WARNING_OBJECT (sink, "underflow happend position %lld pts %u", priv->position, pts);
-      priv->buf_underflow_fired = TRUE;
-      new_underflow = TRUE;
-    }
-    GST_OBJECT_UNLOCK (sink);
-  }
-  if (new_underflow) {
-    GST_WARNING_OBJECT (sink, "emit underflow pts signal pos %lld pts %u", priv->position, pts);
-    g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_UNDERFLOW], 0, 2, NULL);
-    GST_WARNING_OBJECT (sink, "emit underflow pts signal pos %lld pts %u done", priv->position, pts);
-  }
   return 0;
 }
 
