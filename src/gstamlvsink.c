@@ -912,6 +912,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   case V4L2_PIX_FMT_MPEG:
   case V4L2_PIX_FMT_MPEG1:
   case V4L2_PIX_FMT_MPEG2:
+  case V4L2_PIX_FMT_MPEG4:
   case V4L2_PIX_FMT_H264:
     if (priv->dw_mode_user_set) {
       GST_WARNING_OBJECT (sink, "overwrite user dw mode %d --> %d", priv->dw_mode, VDEC_DW_NO_AFBC);
