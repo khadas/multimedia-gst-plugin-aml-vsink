@@ -573,10 +573,11 @@ gst_aml_vsink_query (GstElement * element, GstQuery * query)
 
       if (GST_FORMAT_BYTES == format)
         return GST_ELEMENT_CLASS (parent_class)->query (element, query);
-
-      GST_LOG_OBJECT(sink, "POSITION: %lld", priv->position);
-      gst_query_set_position (query, GST_FORMAT_TIME, priv->position);
-      res = TRUE;
+      if (priv->first_ts_set) {
+        GST_LOG_OBJECT(sink, "POSITION: %lld", priv->position);
+        gst_query_set_position (query, GST_FORMAT_TIME, priv->position);
+        res = TRUE;
+      }
       break;
     }
     default:
@@ -1020,6 +1021,7 @@ static inline void vsink_reset (GstAmlVsink * sink)
   priv->output_start = FALSE;
   priv->capture_port_config = FALSE;
   priv->buf_underflow_fired = FALSE;
+  priv->position = 0;
 }
 
 static gpointer video_eos_thread(gpointer data)
@@ -1812,10 +1814,13 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
   if (GST_BUFFER_PTS_IS_VALID(buf)) {
     if (!priv->first_ts_set) {
       GST_INFO_OBJECT (sink, "first ts %lld", GST_BUFFER_PTS (buf));
-      if (priv->segment.start)
+      if (priv->segment.start) {
         priv->first_ts = GST_BUFFER_PTS (buf);
-      else
+        priv->position = priv->segment.start;
+      } else {
         priv->first_ts = 0;
+        priv->position = GST_BUFFER_PTS (buf);
+      }
       priv->first_ts_set = true;
     }
   }
