@@ -139,6 +139,9 @@ struct _GstAmlVsinkPrivate
   /* linear frame dimension after double write */
   uint32_t coded_w;
   uint32_t coded_h;
+  /* the scaled dimension of the frame */
+  int visible_dw_w;
+  int visible_dw_h;
 
   /* pause PTS */
   uint32_t pause_pts;
@@ -1415,6 +1418,18 @@ static bool handle_v4l_event (GstAmlVsink *sink)
       return false;
     }
 
+    /* the scaled dimension of the frame */
+    memset( &selection, 0, sizeof(selection) );
+    selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    selection.target = V4L2_SEL_TGT_COMPOSE;
+    rc = ioctl (priv->fd, VIDIOC_G_SELECTION, &selection);
+    if (rc) {
+      GST_ERROR ("fail to get scaled dimension %d", errno);
+    }
+    priv->visible_dw_w = selection.r.width;
+    priv->visible_dw_h = selection.r.height;
+    GST_DEBUG ("scaled %dx%d",  priv->visible_dw_w, priv->visible_dw_h);
+
     pthread_mutex_lock (&priv->res_lock);
     priv->cb = v4l_setup_capture_port (
         priv->fd, &priv->cb_num,
@@ -1657,15 +1672,15 @@ static gpointer video_decode_thread(gpointer data)
 
     GST_OBJECT_LOCK (sink);
     if (priv->src_rec_set) {
-      src_win.x = priv->visible_w * priv->source_window.x;
-      src_win.y = priv->visible_h * priv->source_window.y;
-      src_win.w = priv->visible_w * priv->source_window.w;
-      src_win.h = priv->visible_h * priv->source_window.h;
+      src_win.x = priv->visible_dw_w * priv->source_window.x;
+      src_win.y = priv->visible_dw_h * priv->source_window.y;
+      src_win.w = priv->visible_dw_w * priv->source_window.w;
+      src_win.h = priv->visible_dw_h * priv->source_window.h;
     } else {
       src_win.x = 0;
       src_win.y = 0;
-      src_win.w = priv->visible_w;
-      src_win.h = priv->visible_h;
+      src_win.w = priv->visible_dw_w;
+      src_win.h = priv->visible_dw_h;
     }
     GST_OBJECT_UNLOCK (sink);
 
