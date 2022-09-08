@@ -2374,6 +2374,7 @@ static int buffer_underflow_happened(void* handle, uint32_t pts)
   if (new_underflow) {
     GST_WARNING_OBJECT (sink, "emit underflow pts signal pos %lld pts %u", priv->position, pts);
     g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_UNDERFLOW], 0, 2, NULL);
+    GST_WARNING_OBJECT (sink, "emit underflow pts signal pos %lld pts %u done", priv->position, pts);
   }
   return 0;
 }
