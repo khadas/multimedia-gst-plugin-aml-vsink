@@ -32,6 +32,7 @@
 #include <sys/prctl.h>
 #include <pthread.h>
 #include <aml_avsync.h>
+#include <aml_avsync_log.h>
 #include <gst/allocators/gstdmabuf.h>
 //#include <gst/gstclock.h>
 #include <gstamlclock.h>
@@ -1649,6 +1650,7 @@ static gpointer video_decode_thread(gpointer data)
     GST_OBJECT_UNLOCK (sink);
 
     if (priv->out_frame_cnt == 0 && !priv->flushing_) {
+      log_info("vsink rendering first ts %lld", frame_ts);
       GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld", frame_ts);
       g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_FIRSTFRAME], 0, 2, NULL);
       GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld done", frame_ts);
@@ -1829,6 +1831,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
   if (GST_BUFFER_PTS_IS_VALID(buf)) {
     if (!priv->first_ts_set) {
       GST_INFO_OBJECT (sink, "first ts %lld", GST_BUFFER_PTS (buf));
+      log_info("vsink receive first ts %lld", GST_BUFFER_PTS (buf));
       if (priv->segment.start) {
         priv->first_ts = GST_BUFFER_PTS (buf);
         priv->position = priv->segment.start;
