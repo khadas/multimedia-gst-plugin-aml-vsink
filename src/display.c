@@ -16,6 +16,7 @@
  * Free SoftwareFoundation, Inc., 59 Temple Place, Suite 330, Boston,
  * MA 02111-1307 USA
  */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -25,6 +26,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <string.h>
+#include <sched.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -81,6 +83,8 @@ static struct drm_frame* create_black_frame (void* handle,
     unsigned int width, unsigned int height, bool pip);
 static void destroy_black_frame (struct drm_frame *frame);
 static int frame_destroy(struct drm_frame* drm_f);
+static void * display_thread_func(void * arg);
+static void * recycle_thread_func(void * arg);
 
 displayed_cb_func display_cb;
 pause_cb_func pause_cb;
@@ -124,7 +128,7 @@ void *display_engine_start(void* priv, bool pip)
 
   disp->black_frame = create_black_frame (disp, 64, 64, pip);
   /* avsync log level */
-  log_set_level(LOG_INFO);
+  log_set_level(LOG_WARN);
   return disp;
 error:
   free (disp);
@@ -196,6 +200,25 @@ int display_start_avsync(void *handle, enum sync_mode mode, int id, int delay)
     GST_WARNING ("set check_underflow");
     av_sync_set_underflow_check_cb (disp->avsync, underflow_check_cb, disp, NULL);
   }
+  if (!disp->disp_started) {
+    int rc;
+    disp->disp_started = true;
+    disp->last_frame = false;
+
+    rc = pthread_create(&disp->disp_t, NULL, display_thread_func, disp);
+    if (rc) {
+      GST_ERROR ("create dispay thread fails\n");
+      ret = -1;
+    }
+
+    disp->recycle_started = true;
+    rc = pthread_create(&disp->recycle_t, NULL, recycle_thread_func, disp);
+    if (rc) {
+      GST_ERROR ("create recycle thread fails\n");
+      return -1;
+    }
+  }
+
   return 0;
 
 exit:
@@ -412,7 +435,23 @@ static void * display_thread_func(void * arg)
   struct drm_frame *f = NULL, *f_old = NULL, *f_old_old = NULL;
   bool first_frame_rendered = false;
   drmVBlank vbl;
+  struct sched_param schedParam;
+  schedParam.sched_priority = sched_get_priority_max(SCHED_FIFO);
+  if (pthread_setschedparam (pthread_self(), SCHED_FIFO, &schedParam))
+    GST_WARNING ("fail to set display_thread_func priority");
 
+  {
+    int j;
+    cpu_set_t cpuset;
+
+    CPU_ZERO(&cpuset);
+    for (j = 0; j < 2; j++)
+      CPU_SET(j, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset))
+      GST_WARNING ("fail to set cpu affinity");
+  }
+
+  GST_DEBUG ("enter");
   prctl (PR_SET_NAME, "aml_v_dis");
   memset(&vbl, 0, sizeof(drmVBlank));
 
@@ -441,6 +480,8 @@ static void * display_thread_func(void * arg)
     pthread_mutex_unlock (&disp->avsync_lock);
     if (!sync_frame)
       continue;
+    if (!first_frame_rendered)
+      log_info("vsink rendering first ts");
 
     f = sync_frame->private;
 
@@ -556,25 +597,6 @@ int display_engine_show(void* handle, struct drm_frame* frame,
     GST_ERROR ("invalid window pointer");
     return -1;
   }
-
-  if (!disp->disp_started) {
-    disp->disp_started = true;
-    disp->last_frame = false;
-
-    rc = pthread_create(&disp->disp_t, NULL, display_thread_func, disp);
-    if (rc) {
-      GST_ERROR ("create dispay thread fails\n");
-      return -1;
-    }
-
-    disp->recycle_started = true;
-    rc = pthread_create(&disp->recycle_t, NULL, recycle_thread_func, disp);
-    if (rc) {
-      GST_ERROR ("create recycle thread fails\n");
-      return -1;
-    }
-  }
-
   sync_frame->private = frame;
   sync_frame->pts = frame->pts;
   sync_frame->duration = frame->duration;
