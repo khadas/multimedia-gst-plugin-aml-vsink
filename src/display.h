@@ -53,7 +53,6 @@ struct drm_frame {
   void* pri_dec;
   void* pri_drm;
   struct vframe sync_frame;
-  struct rect window;
   struct rect source_window;
 };
 

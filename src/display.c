@@ -84,6 +84,10 @@ struct video_disp {
   void * recycle_q;
   bool recycle_started;
   pthread_t recycle_t;
+
+  /* scaling setting */
+  GRWLock scale_lock;
+  struct rect dst_win;
 };
 
 static struct drm_frame* create_black_frame (void* handle,
@@ -137,6 +141,7 @@ void *display_engine_start(void* priv, bool pip, bool low_latency)
 
   disp->black_frame = create_black_frame (disp, 64, 64, pip);
   disp->cur_frame = NULL;
+  g_rw_lock_init (&disp->scale_lock);
   /* avsync log level */
   log_set_level(AVS_LOG_INFO);
   return disp;
@@ -467,6 +472,7 @@ void display_engine_stop(void *handle)
   }
   destroy_black_frame (disp->black_frame);
   drm_destroy_display (disp->drm);
+  g_rw_lock_clear (&disp->scale_lock);
   disp->drm = NULL;
   pthread_mutex_destroy (&disp->avsync_lock);
   free (disp);
@@ -588,10 +594,12 @@ static void * display_thread_func(void * arg)
       gem_buf = f->buf;
 
       //set gem_buf window
-      gem_buf->crtc_x = f->window.x;
-      gem_buf->crtc_y = f->window.y;
-      gem_buf->crtc_w = f->window.w;
-      gem_buf->crtc_h = f->window.h;
+      g_rw_lock_reader_lock (&disp->scale_lock);
+      gem_buf->crtc_x = disp->dst_win.x;
+      gem_buf->crtc_y = disp->dst_win.y;
+      gem_buf->crtc_w = disp->dst_win.w;
+      gem_buf->crtc_h = disp->dst_win.h;
+      g_rw_lock_reader_unlock (&disp->scale_lock);
 
       gem_buf->src_x = f->source_window.x;
       gem_buf->src_y = f->source_window.y;
@@ -600,7 +608,8 @@ static void * display_thread_func(void * arg)
 
       rc = drm_post_buf (disp->drm, gem_buf);
       if (rc) {
-        GST_ERROR ("drm_post_buf error %d", rc);
+        GST_ERROR ("drm_post_buf errno %d", errno);
+        display_cb(disp->priv, f_old_old->pri_dec, false, false);
         continue;
       }
       /* when next two frame are posted, fence can be retrieved.
@@ -699,8 +708,12 @@ int display_engine_show(void* handle, struct drm_frame* frame,
   sync_frame->pts = frame->pts;
   sync_frame->duration = frame->duration;
   sync_frame->free = sync_frame_free;
-  frame->window = *window;
   frame->source_window = *src_window;
+  if (memcmp(&disp->dst_win, window, sizeof(*window))) {
+    g_rw_lock_writer_lock (&disp->scale_lock);
+    memcpy (&disp->dst_win, window, sizeof(*window));
+    g_rw_lock_writer_unlock (&disp->scale_lock);
+  }
 
   if (!disp->low_latency) {
     rc = av_sync_push_frame(disp->avsync, sync_frame);

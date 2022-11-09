@@ -342,12 +342,12 @@ void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num
 
     GST_LOG ("recycle %d buffers from %p", num, ob);
     if (!num)
-      return;
+      return 0;
 
     ret = ioctl(fd, VIDIOC_REQBUFS, &req);
     if (ret) {
       GST_ERROR ("fail VIDIOC_REQBUFS %d",errno);
-      return;
+      return 0;
     }
 
     for (i = 0 ; i < num ; i++) {
