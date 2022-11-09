@@ -83,4 +83,5 @@ int display_set_pause(void *handle, bool pause);
 int display_set_pause_pts(void *handle, uint32_t pause_pts);
 int display_set_speed(void *handle, float speed);
 int display_set_checkunderflow(void *handle, bool underflow_check);
+void display_engine_refresh(void* handle, struct rect *dst, struct rect *src);
 #endif

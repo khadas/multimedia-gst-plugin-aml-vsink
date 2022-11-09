@@ -663,7 +663,7 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
     } else {
       priv->screen_w = atoi(parts[0]);
       priv->screen_h = atoi(parts[1]);
-      GST_WARNING_OBJECT (sink, "screen size %dx%d",
+      GST_DEBUG_OBJECT (sink, "screen size %dx%d",
               priv->screen_w, priv->screen_h);
     }
     break;
@@ -705,7 +705,7 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
         priv->source_window.h = nh;
         GST_OBJECT_UNLOCK ( sink );
 
-        GST_WARNING ("set source window rect (%f,%f,%f,%f)", nx, ny, nw, nh);
+        GST_DEBUG ("set source window rect (%f,%f,%f,%f)", nx, ny, nw, nh);
       }
     }
     g_strfreev(parts);
@@ -737,11 +737,37 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
         priv->window.y = ny;
         priv->window.w = nw;
         priv->window.h = nh;
+
         if (priv->visible_w && priv->visible_h)
           update_stretch_window(priv);
+
+        if (priv->avsync_paused) {
+          struct rect *win;
+          struct rect src_win;
+
+          if (priv->stretch_mode == 0)
+            win = &priv->window;
+          else
+            win = &priv->stretch_window;
+
+          if (priv->src_rec_set) {
+            src_win.x = priv->visible_w * priv->source_window.x;
+            src_win.y = priv->visible_h * priv->source_window.y;
+            src_win.w = priv->visible_w * priv->source_window.w;
+            src_win.h = priv->visible_h * priv->source_window.h;
+          } else {
+            src_win.x = 0;
+            src_win.y = 0;
+            src_win.w = priv->visible_w;
+            src_win.h = priv->visible_h;
+          }
+          if (priv->render)
+            display_engine_refresh (priv->render, win, &src_win);
+          GST_DEBUG ("set window rect (%d,%d,%d,%d)", win->x, win->y, win->w, win->h);
+        }
         GST_OBJECT_UNLOCK ( sink );
 
-        GST_WARNING ("set window rect (%d,%d,%d,%d)", nx, ny, nw, nh);
+        GST_DEBUG ("set window rect (%d,%d,%d,%d)", nx, ny, nw, nh);
       }
     }
     g_strfreev(parts);
@@ -750,7 +776,7 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
   case PROP_STRETCH_MODE:
   {
     priv->stretch_mode = g_value_get_int (value);
-    GST_WARNING ("stretch mode %d", priv->stretch_mode);
+    GST_DEBUG ("stretch mode %d", priv->stretch_mode);
     break;
   }
   case PROP_UNDERFLOW_CHECK:
@@ -1299,7 +1325,7 @@ static void update_stretch_window(GstAmlVsinkPrivate *priv)
   priv->stretch_window.y = y;
   priv->stretch_window.w = w;
   priv->stretch_window.h = h;
-  GST_WARNING ("stretch [%d %d %d %d] => [%d %d %d %d]",
+  GST_DEBUG ("stretch [%d %d %d %d] => [%d %d %d %d]",
       priv->window.x, priv->window.y,
       priv->window.w, priv->window.h,
       x, y, w, h);

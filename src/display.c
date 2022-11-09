@@ -59,6 +59,7 @@ struct video_disp {
   uint32_t pause_pts;
   bool check_underflow;
   struct drm_frame *black_frame;
+  struct drm_frame *cur_frame;
 
 
   /* trick play */
@@ -68,6 +69,7 @@ struct video_disp {
   /* avsync */
   void * avsync;
   int session;
+  bool paused;
 
   /* display thread */
   bool disp_started;
@@ -127,6 +129,7 @@ void *display_engine_start(void* priv, bool pip)
   pthread_mutex_init (&disp->avsync_lock, NULL);
 
   disp->black_frame = create_black_frame (disp, 64, 64, pip);
+  disp->cur_frame = NULL;
   /* avsync log level */
   log_set_level(AVS_LOG_INFO);
   return disp;
@@ -430,6 +433,33 @@ void display_engine_stop(void *handle)
   free (disp);
 }
 
+/* Should only call during pause state
+ * It will update the current frame position
+ */
+void display_engine_refresh(void* handle, struct rect *dst, struct rect *src)
+{
+  struct video_disp* disp = handle;
+  struct drm_buf* gem_buf;
+
+  pthread_mutex_lock (&disp->avsync_lock);
+  if (disp->paused && disp->drm && disp->cur_frame) {
+    struct drm_buf* gem_buf;
+
+    gem_buf = disp->cur_frame->buf;
+    gem_buf->crtc_x = dst->x;
+    gem_buf->crtc_y = dst->y;
+    gem_buf->crtc_w = dst->w;
+    gem_buf->crtc_h = dst->h;
+    gem_buf->src_x = src->x;
+    gem_buf->src_y = src->y;
+    gem_buf->src_w = src->w;
+    gem_buf->src_h = src->h;
+
+    disp->drm->set_plane(disp->drm, gem_buf);
+  }
+  pthread_mutex_unlock (&disp->avsync_lock);
+}
+
 static void * display_thread_func(void * arg)
 {
   struct video_disp *disp = arg;
@@ -526,6 +556,7 @@ static void * display_thread_func(void * arg)
 
       f_old_old = f_old;
       f_old = f;
+      disp->cur_frame = f;
       first_frame_rendered = true;
     }
   }
@@ -590,7 +621,7 @@ int display_engine_show(void* handle, struct drm_frame* frame,
   int rc;
   struct vframe* sync_frame = &frame->sync_frame;
 
-  if (!disp->avsync) {
+  if (!disp || !disp->avsync) {
     GST_ERROR ("avsync not started");
     return -1;
   }
@@ -640,9 +671,14 @@ int display_set_checkunderflow(void *handle, bool underflow_check)
 int display_set_pause(void *handle, bool pause)
 {
   struct video_disp *disp = handle;
+  int rc;
 
   GST_INFO ("pause %d", pause);
-  return av_sync_pause (disp->avsync, pause);
+  pthread_mutex_lock (&disp->avsync_lock);
+  rc = av_sync_pause (disp->avsync, pause);
+  disp->paused = pause;
+  pthread_mutex_unlock (&disp->avsync_lock);
+  return rc;
 }
 
 int display_set_pause_pts(void *handle, uint32_t pause_pts)
