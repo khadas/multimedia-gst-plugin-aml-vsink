@@ -1863,7 +1863,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
      * Restrict apply that dw 16 can not be changed to other mode
      * in the run time, but dw 0/1/2/4 can be changed in runtime */
     if (v4l_dec_dw_config (priv->fd, priv->output_format,
-              priv->dw_mode, priv->is_2k_only, priv->fr)) {
+              priv->dw_mode,priv->low_latency, priv->is_2k_only, priv->fr)) {
       GST_ERROR("v4l_dec_dw_config failed");
       return GST_FLOW_ERROR;
     }

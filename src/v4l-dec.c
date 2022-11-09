@@ -560,7 +560,7 @@ static int config_margin_buffer_number (uint32_t fmt, bool only_2k, float frame_
   return num;
 }
 
-int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,
+int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,bool low_latency,
       bool only_2k, float frame_rate)
 {
   int rc;
@@ -571,6 +571,8 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,
   streamparm.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
   decParm->parms_status = V4L2_CONFIG_PARM_DECODE_CFGINFO;
   decParm->cfg.double_write_mode = dw_mode;
+  decParm->cfg.low_latency_mode = low_latency;
+  GST_DEBUG("luohang: set low_latency %d",decParm->cfg.low_latency_mode);
   decParm->cfg.ref_buf_margin = config_margin_buffer_number(fmt, only_2k, frame_rate);
 
   rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
