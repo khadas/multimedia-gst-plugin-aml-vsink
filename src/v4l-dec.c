@@ -483,6 +483,7 @@ struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
       cb[i]->vaddr[j] = NULL;
       cb[i]->plane[j].m.fd = fds[j];
       cb[i]->gem_fd[j] = fds[j];
+      GST_DEBUG("index %d fd %d", i, fds[j]);
     }
 
     rc = ioctl (fd, VIDIOC_QBUF, buf);
@@ -527,9 +528,12 @@ int recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t nu
       }
       if (!cb[i]->displayed) {
         if (cb[i]->drm_frame) {
-          cb[i]->drm_frame->destroy(cb[i]->drm_frame);
-          rel_num++;
-          GST_DEBUG ("free index %d", i);
+          if (cb[i]->drm_frame->destroy(cb[i]->drm_frame)){
+            GST_ERROR("free index %d fail", i);
+          } else {
+            rel_num++;
+            GST_DEBUG ("free index %d", i);
+          }
         }
         free (cb[i]);
         cb [i] = NULL;
@@ -845,8 +849,8 @@ int v4l_queue_capture_buffer(int fd, struct capture_buffer *cb)
   cb->displayed = false;
   ret = ioctl(fd, VIDIOC_QBUF, &cb->buf);
   if (ret) {
-    GST_ERROR ("cap VIDIOC_QBUF %dth buf fail %d\n",
-        cb->id, errno);
+    GST_ERROR ("cap VIDIOC_QBUF %dth buf fail %d fd %d/%d\n",
+        cb->id, errno, cb->gem_fd[0], cb->gem_fd[1]);
   }
   return ret;
 }

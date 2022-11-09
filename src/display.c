@@ -439,7 +439,6 @@ void display_engine_stop(void *handle)
 void display_engine_refresh(void* handle, struct rect *dst, struct rect *src)
 {
   struct video_disp* disp = handle;
-  struct drm_buf* gem_buf;
 
   pthread_mutex_lock (&disp->avsync_lock);
   if (disp->paused && disp->drm && disp->cur_frame) {
@@ -545,12 +544,11 @@ static void * display_thread_func(void * arg)
        * So introduce two frames delay here
        */
       if (f_old_old) {
+        f_old_old->wait_recycle = true;
         rc = queue_item (disp->recycle_q, f_old_old);
         if (rc) {
           GST_ERROR ("queue fail %d qlen %d", rc, queue_size(disp->recycle_q));
           display_cb(disp->priv, f_old_old->pri_dec, true);
-        } else {
-          f_old_old->wait_recycle = true;
         }
       }
 

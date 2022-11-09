@@ -2342,18 +2342,23 @@ static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed)
 
   pthread_mutex_lock (&priv->res_lock);
   if (frame->free_on_recycle) {
-    GST_DEBUG ("free index %d", frame->buf.index);
-    frame->drm_frame->destroy(frame->drm_frame);
-    free(frame);
-    priv->cb_rel_num++;
+    if (frame->drm_frame->destroy(frame->drm_frame)) {
+      GST_ERROR("free index %d fail", frame->buf.index);
+     } else {
+      GST_DEBUG ("free index %d", frame->buf.index);
+      free(frame);
+      priv->cb_rel_num++;
+     }
     goto exit;
   }
 
   if (priv->fd < 0 || !priv->capture_port_config) {
     GST_WARNING ("free index %d in wrong state fd %d configed %d", frame->buf.index,
         priv->fd, priv->capture_port_config);
-    frame->drm_frame->destroy(frame->drm_frame);
-    priv->cb_rel_num++;
+    if (frame->drm_frame->destroy(frame->drm_frame))
+      GST_ERROR("free index %d fail", frame->buf.index);
+    else
+      priv->cb_rel_num++;
     free(frame);
     goto exit;
   }
