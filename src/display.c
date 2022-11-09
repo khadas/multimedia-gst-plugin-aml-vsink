@@ -71,6 +71,11 @@ struct video_disp {
   int session;
   bool paused;
 
+  /* low latency mode */
+  bool low_latency;
+  GQueue *fq;
+  pthread_mutex_t fq_lock;
+
   /* display thread */
   bool disp_started;
   pthread_t disp_t;
@@ -99,7 +104,7 @@ static void display_res_change_cb(void *p)
   return;
 }
 
-void *display_engine_start(void* priv, bool pip)
+void *display_engine_start(void* priv, bool pip, bool low_latency)
 {
   struct video_disp *disp = NULL;
   struct drm_display *drm;
@@ -126,7 +131,9 @@ void *display_engine_start(void* priv, bool pip)
   disp->priv = priv;
   disp->pause_pts = -1;
   disp->session = -1;
+  disp->low_latency = low_latency;
   pthread_mutex_init (&disp->avsync_lock, NULL);
+  pthread_mutex_init (&disp->fq_lock, NULL);
 
   disp->black_frame = create_black_frame (disp, 64, 64, pip);
   disp->cur_frame = NULL;
@@ -161,47 +168,55 @@ int display_start_avsync(void *handle, enum sync_mode mode, int id, int delay)
 {
   struct video_disp * disp = handle;
   int ret = 0;
-  struct video_config config;
 
-  pthread_mutex_lock (&disp->avsync_lock);
-  if (mode == AV_SYNC_MODE_VMASTER) {
-    int session_id;
+  if (!disp->low_latency) {
+    struct video_config config;
+    pthread_mutex_lock (&disp->avsync_lock);
+    if (mode == AV_SYNC_MODE_VMASTER) {
+      int session_id;
 
-    disp->session = av_sync_open_session(&session_id);
-    if (disp->session < 0) {
-      GST_ERROR ("create avsync session fail\n");
+      disp->session = av_sync_open_session(&session_id);
+      if (disp->session < 0) {
+        GST_ERROR ("create avsync session fail\n");
+        ret = -1;
+        goto exit;
+      }
+      id = session_id;
+      GST_WARNING ("session ID %d", id);
+    }
+
+    disp->avsync = av_sync_create(id, mode, AV_SYNC_TYPE_VIDEO, 2);
+    if (!disp->avsync) {
+      GST_ERROR ("create avsync fails\n");
       ret = -1;
       goto exit;
     }
-    id = session_id;
-    GST_WARNING ("session ID %d", id);
-  }
 
-  disp->avsync = av_sync_create(id, mode, AV_SYNC_TYPE_VIDEO, 2);
-  if (!disp->avsync) {
-    GST_ERROR ("create avsync fails\n");
-    ret = -1;
-    goto exit;
-  }
+    memset(&config, 0, sizeof(struct video_config));
+    config.delay = 2;
+    config.extra_delay = delay;
+    av_sync_video_config(disp->avsync, &config);
 
-  memset(&config, 0, sizeof(struct video_config));
-  config.delay = 2;
-  config.extra_delay = delay;
-  av_sync_video_config(disp->avsync, &config);
+    if (disp->speed_pending) {
+      disp->speed_pending = false;
+      av_sync_set_speed (disp->avsync, disp->speed);
+    }
+    pthread_mutex_unlock (&disp->avsync_lock);
 
-  if (disp->speed_pending) {
-    disp->speed_pending = false;
-    av_sync_set_speed (disp->avsync, disp->speed);
-  }
-  pthread_mutex_unlock (&disp->avsync_lock);
-
-  if (disp->pause_pts != -1) {
-    av_sync_set_pause_pts_cb (disp->avsync, pause_pts_cb, disp);
-    av_sync_set_pause_pts (disp->avsync, disp->pause_pts);
-  }
-  if (disp->check_underflow) {
-    GST_WARNING ("set check_underflow");
-    av_sync_set_underflow_check_cb (disp->avsync, underflow_check_cb, disp, NULL);
+    if (disp->pause_pts != -1) {
+      av_sync_set_pause_pts_cb (disp->avsync, pause_pts_cb, disp);
+      av_sync_set_pause_pts (disp->avsync, disp->pause_pts);
+    }
+    if (disp->check_underflow) {
+      GST_WARNING ("set check_underflow");
+      av_sync_set_underflow_check_cb (disp->avsync, underflow_check_cb, disp, NULL);
+    }
+  } else {
+    disp->fq = g_queue_new();
+    if (!disp->fq) {
+      GST_ERROR ("OOM\n");
+      return -1;
+    }
   }
   if (!disp->disp_started) {
     int rc;
@@ -232,6 +247,23 @@ exit:
 void display_stop_avsync(void *handle)
 {
   struct video_disp * disp = handle;
+
+  if (disp->low_latency) {
+    struct vframe *pop_frame;
+    struct drm_frame *f;
+    /* clean all frames */
+    pthread_mutex_lock (&disp->fq_lock);
+    do {
+      pop_frame = g_queue_pop_head (disp->fq);
+      if (pop_frame) {
+        f = pop_frame->private;
+        display_cb(disp->priv, f->pri_dec, true);
+      }
+    } while (pop_frame);
+    pthread_mutex_unlock (&disp->fq_lock);
+    GST_INFO ("clean frame queue");
+    return;
+  }
 
   GST_WARNING ("stop avsync");
   pthread_mutex_lock (&disp->avsync_lock);
@@ -414,6 +446,13 @@ void display_engine_stop(void *handle)
   }
   pthread_mutex_unlock (&disp->avsync_lock);
 
+  pthread_mutex_lock(&disp->fq_lock);
+  if (disp->fq) {
+    g_queue_free(disp->fq);
+    disp->fq = NULL;
+  }
+  pthread_mutex_unlock(&disp->fq_lock);
+
   disp->recycle_started = false;
   if (disp->recycle_t) {
     rc = pthread_join (disp->recycle_t, NULL);
@@ -504,10 +543,32 @@ static void * display_thread_func(void * arg)
       usleep(1000);
     }
 
-    pthread_mutex_lock (&disp->avsync_lock);
-    if (disp->avsync)
-      sync_frame = av_sync_pop_frame(disp->avsync);
-    pthread_mutex_unlock (&disp->avsync_lock);
+    if (!disp->low_latency) {
+      pthread_mutex_lock (&disp->avsync_lock);
+      if (disp->avsync)
+        sync_frame = av_sync_pop_frame(disp->avsync);
+      pthread_mutex_unlock (&disp->avsync_lock);
+    } else {
+      struct vframe *pop_frame;
+      struct vframe *pre_frame = NULL;
+
+      /* get the latest frame */
+      pthread_mutex_lock (&disp->fq_lock);
+      do {
+        pop_frame = g_queue_pop_head (disp->fq);
+
+        /* release preframe */
+        if (pre_frame && pop_frame) {
+          struct drm_frame* f = pre_frame->private;
+          display_cb(disp->priv, f->pri_dec, true);
+        }
+        pre_frame = pop_frame;
+
+        if (pop_frame)
+          sync_frame = pop_frame;
+      } while (pop_frame);
+      pthread_mutex_unlock (&disp->fq_lock);
+    }
     if (!sync_frame)
       continue;
     if (!first_frame_rendered)
@@ -619,7 +680,7 @@ int display_engine_show(void* handle, struct drm_frame* frame,
   int rc;
   struct vframe* sync_frame = &frame->sync_frame;
 
-  if (!disp || !disp->avsync) {
+  if (!disp || (!disp->avsync && !disp->low_latency) || (!disp->fq && disp->low_latency)) {
     GST_ERROR ("avsync not started");
     return -1;
   }
@@ -634,9 +695,15 @@ int display_engine_show(void* handle, struct drm_frame* frame,
   frame->window = *window;
   frame->source_window = *src_window;
 
-  rc = av_sync_push_frame(disp->avsync, sync_frame);
-  if (!rc)
-    GST_LOG ("push frame: %u", sync_frame->pts);
+  if (!disp->low_latency) {
+    rc = av_sync_push_frame(disp->avsync, sync_frame);
+    if (!rc)
+      GST_LOG ("push frame: %u", sync_frame->pts);
+  } else {
+    pthread_mutex_lock (&disp->fq_lock);
+    g_queue_push_tail(disp->fq, sync_frame);
+    pthread_mutex_unlock (&disp->fq_lock);
+  }
 
   return 0;
 }
@@ -669,13 +736,15 @@ int display_set_checkunderflow(void *handle, bool underflow_check)
 int display_set_pause(void *handle, bool pause)
 {
   struct video_disp *disp = handle;
-  int rc;
+  int rc = 0;
 
   GST_INFO ("pause %d", pause);
-  pthread_mutex_lock (&disp->avsync_lock);
-  rc = av_sync_pause (disp->avsync, pause);
-  disp->paused = pause;
-  pthread_mutex_unlock (&disp->avsync_lock);
+  if (!disp->low_latency) {
+    pthread_mutex_lock (&disp->avsync_lock);
+    rc = av_sync_pause (disp->avsync, pause);
+    disp->paused = pause;
+    pthread_mutex_unlock (&disp->avsync_lock);
+  }
   return rc;
 }
 
@@ -698,6 +767,9 @@ int display_show_black_frame(void * handle)
 int display_set_speed(void *handle, float speed)
 {
   struct video_disp *disp = handle;
+
+  if (disp->low_latency)
+    return 0;
 
   pthread_mutex_lock (&disp->avsync_lock);
   if (disp->avsync) {

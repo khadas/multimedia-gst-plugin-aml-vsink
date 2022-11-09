@@ -62,7 +62,7 @@ typedef int (*displayed_cb_func)(void* priv, void* handle, bool displayed);
 typedef int (*pause_cb_func)(void* priv, uint32_t pts);
 typedef int (*underflow_cb_func)(void* priv, uint32_t pts);
 
-void *display_engine_start(void* priv, bool pip);
+void *display_engine_start(void* priv, bool pip, bool low_latency);
 void display_engine_stop(void * handle);
 int display_engine_register_cb(displayed_cb_func cb);
 int pause_pts_register_cb(pause_cb_func cb);

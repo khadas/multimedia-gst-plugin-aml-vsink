@@ -120,6 +120,7 @@ struct _GstAmlVsinkPrivate
   gboolean avsync_paused;
   int sessionId;
   uint32_t delay;
+  gboolean low_latency;
 
   GstCaps *caps;
 
@@ -184,6 +185,7 @@ enum
   PROP_SCREEN_SIZE,
   PROP_RENDER_DELAY,
   PROP_UNDERFLOW_CHECK,
+  PROP_IMMEDIATE_OUTPUT,
   PROP_LAST
 };
 
@@ -331,6 +333,11 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
       g_param_spec_boolean ("check-buffer-underflow", "check buffer underflow",
         "support buffer underflow call back",
         FALSE, G_PARAM_WRITABLE));
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_IMMEDIATE_OUTPUT,
+      g_param_spec_boolean ("immediate-output",
+        "immediate output mode, low latency video",
+        "Decoded frames are output with minimum delay. B frames are dropped.", FALSE, G_PARAM_READWRITE));
 
   g_signals[SIGNAL_FIRSTFRAME]= g_signal_new( "first-video-frame-callback",
       G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
@@ -541,6 +548,7 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->is_underflow_check = FALSE;
   priv->buf_underflow_fired = FALSE;
   priv->codec_data = NULL;
+  priv->low_latency = FALSE;
 }
 
 static void
@@ -785,6 +793,11 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
     GST_WARNING ("check buffer underflow %d", priv->is_underflow_check);
     break;
   }
+  case PROP_IMMEDIATE_OUTPUT:
+  {
+    priv->low_latency = g_value_get_boolean(value);
+    break;
+  }
   default:
   G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
   break;
@@ -818,9 +831,16 @@ static void gst_aml_vsink_get_property (GObject * object, guint property_id,
     g_value_set_int(value, priv->stretch_mode);
     break;
   }
+  case PROP_IMMEDIATE_OUTPUT:
+  {
+    g_value_set_int(value, priv->low_latency);
+    break;
+  }
   default:
+  {
     G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
     break;
+  }
   }
 }
 
@@ -2252,7 +2272,7 @@ gst_aml_vsink_change_state (GstElement * element,
       GST_DEBUG_OBJECT(sink, "null to ready");
       GST_OBJECT_LOCK (sink);
       /* render init */
-      priv->render = display_engine_start(priv, priv->pip);
+      priv->render = display_engine_start(priv, priv->pip, priv->low_latency);
       if (!priv->render) {
         GST_ERROR ("start render fail");
         ret = GST_STATE_CHANGE_FAILURE;
