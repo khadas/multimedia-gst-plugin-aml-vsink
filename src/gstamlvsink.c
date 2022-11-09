@@ -159,6 +159,8 @@ struct _GstAmlVsinkPrivate
   gboolean last_res_frame;
   int cb_alloc_num;
   int cb_rel_num;
+  int ob_ref_num;
+  int ob_unref_num;
   gboolean is_underflow_check;
   /* buffer underflow happened */
   gboolean buf_underflow_fired;
@@ -545,6 +547,8 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->render = NULL;
   priv->cb_alloc_num = 0;
   priv->cb_rel_num = 0;
+  priv->ob_ref_num = 0;
+  priv->ob_unref_num = 0;
   priv->is_underflow_check = FALSE;
   priv->buf_underflow_fired = FALSE;
   priv->codec_data = NULL;
@@ -1825,6 +1829,7 @@ static int get_output_buffer(GstAmlVsink * sink)
         if (ob->gstbuf) {
           gst_buffer_unref (ob->gstbuf);
           ob->gstbuf = NULL;
+          priv->ob_unref_num++;
         }
       } else
         index= -1;
@@ -1851,12 +1856,18 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     else
       priv->output_mode = V4L2_MEMORY_MMAP;
 
+    GST_OBJECT_LOCK (sink);
+    if (priv->fd == -1) {
+      GST_INFO_OBJECT (sink, "buffer received in READY state");
+      goto unlock_exit;
+    }
     priv->secure = (priv->output_mode == V4L2_MEMORY_DMABUF);
     rc = v4l_set_secure_mode (priv->fd, priv->es_width,
         priv->es_height, priv->secure);
     if (rc) {
       GST_ERROR_OBJECT (sink, "set secure mode fail");
-      return GST_FLOW_ERROR;
+      ret = GST_FLOW_ERROR;
+      goto unlock_exit;
     }
 
     /* Need to set correct dw mode even before first frame.
@@ -1865,21 +1876,25 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     if (v4l_dec_dw_config (priv->fd, priv->output_format,
               priv->dw_mode,priv->low_latency, priv->is_2k_only, priv->fr)) {
       GST_ERROR("v4l_dec_dw_config failed");
-      return GST_FLOW_ERROR;
+      ret = GST_FLOW_ERROR;
+      goto unlock_exit;
     }
 
     rc = v4l_set_output_format (priv->fd, priv->output_format,
         priv->es_width, priv->es_height, priv->is_2k_only);
     if (rc) {
       GST_ERROR_OBJECT (sink, "set output format %x fail", priv->output_format);
-      return GST_FLOW_ERROR;
+      ret = GST_FLOW_ERROR;
+      goto unlock_exit;
     }
 
     priv->ob = v4l_setup_output_port (priv->fd, priv->output_mode, &priv->ob_num);
     if (!priv->ob) {
       GST_ERROR_OBJECT (sink, "setup output fail");
-      return GST_FLOW_ERROR;
+      ret = GST_FLOW_ERROR;
+      goto unlock_exit;
     }
+    GST_OBJECT_UNLOCK (sink);
     priv->output_port_config = TRUE;
   }
 
@@ -1905,6 +1920,11 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
   }
 
   GST_OBJECT_LOCK (sink);
+  if (priv->fd == -1) {
+    GST_INFO_OBJECT (sink, "buffer received in READY state");
+    goto unlock_exit;
+  }
+
   if (!priv->ob) {
     GST_INFO ("in stopping sequence, drop buffer");
     goto unlock_exit;
@@ -1940,12 +1960,12 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
 
     rc = ioctl (priv->fd, VIDIOC_QBUF, &ob->buf );
     if (rc) {
-      GST_OBJECT_UNLOCK (sink);
       GST_ERROR ("queuing output buffer failed: rc %d errno %d", rc, errno );
-      goto exit;
+      goto unlock_exit;
     }
     ob->queued = TRUE;
     ob->gstbuf = gst_buffer_ref (buf);
+    priv->ob_ref_num++;
   } else if (priv->output_mode == V4L2_MEMORY_MMAP) {
     GstMapInfo map;
     guint8 * inData;
@@ -2173,6 +2193,7 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
 {
   int ret;
   uint32_t type;
+  int unref_num;
   GstAmlVsinkPrivate *priv = sink->priv;
 
   priv->quitVideoOutputThread = TRUE;
@@ -2184,7 +2205,8 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
     GST_ERROR ("VIDIOC_STREAMOFF fail ret:%d\n",ret);
   }
 
-  recycle_output_port_buffer (priv->fd, priv->ob, priv->ob_num);
+  unref_num = recycle_output_port_buffer (priv->fd, priv->ob, priv->ob_num);
+  priv->ob_unref_num += unref_num;
   priv->ob_num = 0;
   priv->ob = NULL;
 
@@ -2337,7 +2359,9 @@ gst_aml_vsink_change_state (GstElement * element,
       GST_OBJECT_LOCK (sink);
       display_engine_stop (priv->render);
       priv->render = NULL;
-      GST_WARNING("alloc %d rel %d", priv->cb_alloc_num, priv->cb_rel_num);
+      GST_WARNING("alloc %d rel %d ob_ref %d ob_unref %d",
+          priv->cb_alloc_num, priv->cb_rel_num,
+          priv->ob_ref_num, priv->ob_unref_num);
       GST_OBJECT_UNLOCK (sink);
       break;
     }

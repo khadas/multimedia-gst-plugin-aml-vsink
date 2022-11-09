@@ -330,8 +330,10 @@ error:
 	return NULL;
 }
 
-void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num)
+int recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num)
 {
+  int unref_num = 0;
+
   if (ob) {
     int i, ret;
     struct v4l2_requestbuffers req = {
@@ -358,11 +360,13 @@ void recycle_output_port_buffer (int fd, struct output_buffer **ob, uint32_t num
       if (ob[i]->gstbuf) {
         gst_buffer_unref (ob[i]->gstbuf);
         ob[i]->gstbuf = NULL;
+        unref_num++;
       }
       free (ob[i]);
     }
     free (ob);
   }
+  return unref_num;
 }
 
 struct capture_buffer** v4l_setup_capture_port (int fd, uint32_t *buf_cnt,
