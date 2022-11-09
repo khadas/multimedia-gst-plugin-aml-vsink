@@ -55,10 +55,9 @@ struct drm_frame {
   struct vframe sync_frame;
   struct rect window;
   struct rect source_window;
-  bool wait_recycle;
 };
 
-typedef int (*displayed_cb_func)(void* priv, void* handle, bool displayed);
+typedef int (*displayed_cb_func)(void* priv, void* handle, bool displayed, bool recycled);
 typedef int (*pause_cb_func)(void* priv, uint32_t pts);
 typedef int (*underflow_cb_func)(void* priv, uint32_t pts);
 

@@ -257,7 +257,7 @@ void display_stop_avsync(void *handle)
       pop_frame = g_queue_pop_head (disp->fq);
       if (pop_frame) {
         f = pop_frame->private;
-        display_cb(disp->priv, f->pri_dec, true);
+        display_cb(disp->priv, f->pri_dec, true, true);
       }
     } while (pop_frame);
     pthread_mutex_unlock (&disp->fq_lock);
@@ -560,7 +560,7 @@ static void * display_thread_func(void * arg)
         /* release preframe */
         if (pre_frame && pop_frame) {
           struct drm_frame* f = pre_frame->private;
-          display_cb(disp->priv, f->pri_dec, true);
+          display_cb(disp->priv, f->pri_dec, true, false);
         }
         pre_frame = pop_frame;
 
@@ -569,8 +569,10 @@ static void * display_thread_func(void * arg)
       } while (pop_frame);
       pthread_mutex_unlock (&disp->fq_lock);
     }
-    if (!sync_frame)
+    if (!sync_frame) {
+      usleep(1000);
       continue;
+    }
     if (!first_frame_rendered)
       log_info("vsink rendering first ts");
 
@@ -605,11 +607,10 @@ static void * display_thread_func(void * arg)
        * So introduce two frames delay here
        */
       if (f_old_old) {
-        f_old_old->wait_recycle = true;
         rc = queue_item (disp->recycle_q, f_old_old);
         if (rc) {
           GST_ERROR ("queue fail %d qlen %d", rc, queue_size(disp->recycle_q));
-          display_cb(disp->priv, f_old_old->pri_dec, true);
+          display_cb(disp->priv, f_old_old->pri_dec, true, false);
         }
       }
 
@@ -619,10 +620,10 @@ static void * display_thread_func(void * arg)
       first_frame_rendered = true;
     }
   }
-  if (f_old_old && !f_old_old->wait_recycle)
-     display_cb(disp->priv, f_old_old->pri_dec, true);
-  if (f_old && !f_old->wait_recycle)
-     display_cb(disp->priv, f_old->pri_dec, true);
+  if (f_old_old)
+     display_cb(disp->priv, f_old_old->pri_dec, true, true);
+  if (f_old)
+     display_cb(disp->priv, f_old->pri_dec, true, true);
   GST_INFO ("quit %s", __func__);
   return NULL;
 }
@@ -647,16 +648,14 @@ static void * recycle_thread_func(void * arg)
       continue;
     }
     gem_buf = f->buf;
-    f->wait_recycle = false;
     rc = drm_waitvideoFence(gem_buf->fd[0]);
     if (rc <= 0)
       GST_WARNING ("wait fence error %d", rc);
-    display_cb(disp->priv, f->pri_dec, true);
+    display_cb(disp->priv, f->pri_dec, true, false);
   }
 
   while (!dqueue_item(disp->recycle_q, (void **)&f)) {
-    f->wait_recycle = false;
-    display_cb(disp->priv, f->pri_dec, false);
+    display_cb(disp->priv, f->pri_dec, false, true);
   }
 
   GST_INFO ("quit %s", __func__);
@@ -673,10 +672,12 @@ static void sync_frame_free(struct vframe * sync_frame)
     return;
   }
 
-  if (drm_f)
-    display_cb(disp->priv, drm_f->pri_dec, false);
-  else
+  if (drm_f) {
+    display_cb(disp->priv, drm_f->pri_dec, false, false);
+  } else {
     disp->last_frame = true;
+    GST_INFO ("last frame detected");
+  }
 }
 
 int display_engine_show(void* handle, struct drm_frame* frame,

@@ -235,7 +235,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps);
 
 static void reset_decoder(GstAmlVsink *sink, bool hard);
 static gboolean check_vdec(GstAmlVsinkClass *klass);
-static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed);
+static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed, bool recycled);
 static int pause_pts_arrived(void* priv, uint32_t pts);
 static void update_stretch_window(GstAmlVsinkPrivate *priv);
 //static int get_sysfs_uint32(const char *path, uint32_t *value);
@@ -2348,7 +2348,7 @@ gst_aml_vsink_change_state (GstElement * element,
   return ret;
 }
 
-static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed)
+static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed, bool recycled)
 {
   gint64 frame_ts;
   int ret = 0;
@@ -2366,6 +2366,10 @@ static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed)
     priv->rendered_frame_num++;
 
   pthread_mutex_lock (&priv->res_lock);
+
+  if (recycled)
+    GST_DEBUG ("recycle index %d", frame->buf.index);
+
   if (frame->free_on_recycle) {
     if (frame->drm_frame->destroy(frame->drm_frame)) {
       GST_ERROR("free index %d fail", frame->buf.index);
