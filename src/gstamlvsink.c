@@ -1350,8 +1350,9 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     goto exit;
   }
 
+  GST_INFO ("event.type:%d, event.u.src_change.changes:%d", event.type, event.u.src_change.changes);
   if ( (event.type == V4L2_EVENT_SOURCE_CHANGE) &&
-      (event.u.src_change.changes == V4L2_EVENT_SRC_CH_RESOLUTION) )
+      (event.u.src_change.changes & V4L2_EVENT_SRC_CH_RESOLUTION) )
   {
     struct v4l2_selection selection;
     struct v4l2_format fmtOut;
