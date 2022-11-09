@@ -425,6 +425,7 @@ void display_engine_stop(void *handle)
   }
   destroy_black_frame (disp->black_frame);
   drm_destroy_display (disp->drm);
+  disp->drm = NULL;
   pthread_mutex_destroy (&disp->avsync_lock);
   free (disp);
 }

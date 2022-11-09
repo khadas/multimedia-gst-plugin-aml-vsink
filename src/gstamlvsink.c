@@ -1684,13 +1684,15 @@ static gpointer video_decode_thread(gpointer data)
       src_win.w = priv->visible_dw_w;
       src_win.h = priv->visible_dw_h;
     }
-    GST_OBJECT_UNLOCK (sink);
 
-    rc = display_engine_show (priv->render, cb->drm_frame, win, &src_win);
-    if (rc)
-      GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
-    else
-      GST_LOG_OBJECT (sink, "cb index %d to display", cb->id);
+    if (priv->render) {
+      rc = display_engine_show (priv->render, cb->drm_frame, win, &src_win);
+      if (rc)
+        GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
+      else
+        GST_LOG_OBJECT (sink, "cb index %d to display", cb->id);
+    }
+    GST_OBJECT_UNLOCK (sink);
   }
 
 exit:
@@ -1715,6 +1717,7 @@ static int start_video_thread (GstAmlVsink * sink)
 {
   GstAmlVsinkPrivate *priv = sink->priv;
 
+  priv->in_frame_cnt = 0;
   priv->out_frame_cnt = 0;
   priv->dropped_frame_num = 0;
   priv->rendered_frame_num = 0;
@@ -1855,6 +1858,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     goto unlock_exit;
   }
   ob = priv->ob[index];
+  priv->in_frame_cnt++;
 
   if (priv->output_mode == V4L2_MEMORY_DMABUF) {
     gsize dataOffset, maxSize;
@@ -1869,7 +1873,11 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     if (GST_BUFFER_PTS_IS_VALID (buf))
       GST_TIME_TO_TIMEVAL (GST_BUFFER_PTS(buf), ob->buf.timestamp);
 
-    GST_LOG_OBJECT (sink, "queue ob %d ts %lld", ob->buf.index, GST_BUFFER_PTS(buf));
+    if (priv->in_frame_cnt - priv->out_frame_cnt < 2) {
+      GST_DEBUG_OBJECT(sink, "queue ob %d ts %lld in %d out %d",
+          ob->buf.index, GST_BUFFER_PTS(buf), priv->in_frame_cnt, priv->out_frame_cnt);
+    }
+
     inSize= gst_memory_get_sizes( mem, &dataOffset, &maxSize );
 
     ob->buf.bytesused = dataOffset+inSize;
@@ -1931,7 +1939,11 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
         goto unlock_exit;
       }
       ob->queued = true;
-      GST_LOG_OBJECT (sink, "queue ob %d len %d ts %lld", ob->buf.index, copied, GST_BUFFER_PTS(buf));
+      if (priv->in_frame_cnt - priv->out_frame_cnt < 2) {
+          GST_INFO_OBJECT(sink, "queue ob %d len %d ts %lld in %d out %d",
+              ob->buf.index, copied, GST_BUFFER_PTS(buf),
+              priv->in_frame_cnt, priv->out_frame_cnt);
+      }
 #ifdef DUMP_TO_FILE
       if (getenv("AML_VSINK_ES_DUMP")) {
         uint32_t pts32;
@@ -1945,8 +1957,6 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
     }
     gst_buffer_unmap (buf, &map);
   }
-
-  priv->in_frame_cnt++;
 
   if (!priv->output_start && !priv->flushing_) {
     uint32_t type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
