@@ -128,7 +128,7 @@ void *display_engine_start(void* priv, bool pip)
 
   disp->black_frame = create_black_frame (disp, 64, 64, pip);
   /* avsync log level */
-  log_set_level(LOG_WARN);
+  log_set_level(AVS_LOG_INFO);
   return disp;
 error:
   free (disp);
