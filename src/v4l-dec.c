@@ -546,7 +546,22 @@ int recycle_capture_port_buffer (int fd, struct capture_buffer **cb, uint32_t nu
   return rel_num;
 }
 
-int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode, bool only_2k)
+static int config_margin_buffer_number (uint32_t fmt, bool only_2k, float frame_rate)
+{
+  int num = EXTRA_CAPTURE_BUFFERS;
+
+  if (fmt == V4L2_PIX_FMT_H264 && frame_rate > 30.0)
+    num = EXTRA_CAPTURE_BUFFERS + 1;
+  else if (fmt == V4L2_PIX_FMT_AV1 && only_2k)
+    num = EXTRA_CAPTURE_BUFFERS - 1;
+  else if (fmt == V4L2_PIX_FMT_MPEG2 || fmt == V4L2_PIX_FMT_MPEG1)
+    num = 0; /* use driver default */
+
+  return num;
+}
+
+int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,
+      bool only_2k, float frame_rate)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -556,13 +571,7 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode, bool only_2k)
   streamparm.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
   decParm->parms_status = V4L2_CONFIG_PARM_DECODE_CFGINFO;
   decParm->cfg.double_write_mode = dw_mode;
-
-  if (fmt == V4L2_PIX_FMT_H264)
-    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS + 1;
-  else if (fmt == V4L2_PIX_FMT_AV1 && only_2k)
-    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS - 1;
-  else if (fmt != V4L2_PIX_FMT_MPEG2 && fmt != V4L2_PIX_FMT_MPEG1)
-    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS;
+  decParm->cfg.ref_buf_margin = config_margin_buffer_number(fmt, only_2k, frame_rate);
 
   rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
   if (rc)
@@ -572,7 +581,7 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode, bool only_2k)
 }
 
 int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
-    struct hdr_meta *hdr, bool is_2k_only, bool disable_dw_scale)
+    struct hdr_meta *hdr, bool is_2k_only, float frame_rate, bool disable_dw_scale)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -609,7 +618,8 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
 
   decParm->cfg.double_write_mode = dw_mode;
   if (fmt != V4L2_PIX_FMT_MPEG2)
-    decParm->cfg.ref_buf_margin = EXTRA_CAPTURE_BUFFERS;
+    decParm->cfg.ref_buf_margin =
+      config_margin_buffer_number(fmt, is_2k_only, frame_rate);
   decParm->cfg.metadata_config_flag |= (1 << 12);
   if (!disable_dw_scale)
     decParm->cfg.metadata_config_flag |= (1 << 13);

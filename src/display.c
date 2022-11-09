@@ -633,8 +633,14 @@ static void * recycle_thread_func(void * arg)
   struct drm_buf* gem_buf;
   struct drm_frame *f = NULL;
   int rc;
+  struct sched_param schedParam;
 
   prctl (PR_SET_NAME, "aml_v_recy");
+
+  schedParam.sched_priority = sched_get_priority_max(SCHED_FIFO) / 2;
+  if (pthread_setschedparam (pthread_self(), SCHED_FIFO, &schedParam))
+    GST_WARNING ("fail to set recycle_thread_func priority");
+
   while (disp->recycle_started) {
     if (dqueue_item(disp->recycle_q, (void **)&f)) {
       usleep(5000);

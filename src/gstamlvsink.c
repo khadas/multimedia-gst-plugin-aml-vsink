@@ -1417,7 +1417,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     /* Disable DW scale to get correct visible dimension for scaling */
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
-          &priv->hdr, priv->is_2k_only, true)) {
+          &priv->hdr, priv->is_2k_only, priv->fr, true)) {
       GST_ERROR("v4l_dec_config failed");
       priv->internal_err = TRUE;
       GST_OBJECT_UNLOCK (sink);
@@ -1457,7 +1457,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     /* Enable DW scale for correct linear buffer size */
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
-          &priv->hdr, priv->is_2k_only, false)) {
+          &priv->hdr, priv->is_2k_only, priv->fr, false)) {
       GST_ERROR("v4l_dec_config failed");
       priv->internal_err = TRUE;
       GST_OBJECT_UNLOCK (sink);
@@ -1596,6 +1596,7 @@ static gpointer video_decode_thread(gpointer data)
   GstAmlVsink * sink = data;
   GstAmlVsinkPrivate *priv = sink->priv;
   uint32_t type;
+  struct sched_param schedParam;
 
   prctl (PR_SET_NAME, "aml_v_dec");
   GST_INFO_OBJECT (sink, "enter");
@@ -1616,6 +1617,10 @@ static gpointer video_decode_thread(gpointer data)
       goto exit;
     }
   }
+
+  schedParam.sched_priority = sched_get_priority_max(SCHED_FIFO) / 2;
+  if (pthread_setschedparam (pthread_self(), SCHED_FIFO, &schedParam))
+    GST_WARNING ("fail to set video_decode_thread priority");
 
   while (!priv->quitVideoOutputThread) {
     gint64 frame_ts;
@@ -1858,7 +1863,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
      * Restrict apply that dw 16 can not be changed to other mode
      * in the run time, but dw 0/1/2/4 can be changed in runtime */
     if (v4l_dec_dw_config (priv->fd, priv->output_format,
-              priv->dw_mode, priv->is_2k_only)) {
+              priv->dw_mode, priv->is_2k_only, priv->fr)) {
       GST_ERROR("v4l_dec_dw_config failed");
       return GST_FLOW_ERROR;
     }
