@@ -609,7 +609,7 @@ static void * display_thread_func(void * arg)
       rc = drm_post_buf (disp->drm, gem_buf);
       if (rc) {
         GST_ERROR ("drm_post_buf errno %d", errno);
-        display_cb(disp->priv, f_old_old->pri_dec, false, false);
+        display_cb(disp->priv, f->pri_dec, false, false);
         continue;
       }
       /* when next two frame are posted, fence can be retrieved.

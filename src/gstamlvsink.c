@@ -745,6 +745,10 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
           (nh != priv->window.h) ) {
         GST_OBJECT_LOCK ( sink );
         priv->scale_set = true;
+        if (nw < 0)
+          nw = 0;
+        if (nh < 0)
+          nh = 0;
         priv->window.x = nx;
         priv->window.y = ny;
         priv->window.w = nw;
