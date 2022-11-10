@@ -68,6 +68,7 @@ struct _GstAmlVsinkPrivate
   gint64 position;
   GstClockTime first_ts;
   gboolean first_ts_set;
+  gint64 start_pts;
 
   GstSegment segment;
   /* curent stream group */
@@ -188,6 +189,7 @@ enum
   PROP_RENDER_DELAY,
   PROP_UNDERFLOW_CHECK,
   PROP_IMMEDIATE_OUTPUT,
+  PROP_START_PTS,
   PROP_LAST
 };
 
@@ -340,6 +342,11 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
       g_param_spec_boolean ("immediate-output",
         "immediate output mode, low latency video",
         "Decoded frames are output with minimum delay. B frames are dropped.", FALSE, G_PARAM_READWRITE));
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_START_PTS,
+      g_param_spec_uint ("start-pts", "start pts",
+        "In 90K Hz, all video frame less than start pts will be dropped",
+        0, G_MAXUINT, G_MAXUINT, G_PARAM_READWRITE));
 
   g_signals[SIGNAL_FIRSTFRAME]= g_signal_new( "first-video-frame-callback",
       G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
@@ -544,6 +551,7 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->group_id = -1;
   priv->fd = -1;
   priv->pause_pts = -1;
+  priv->start_pts = GST_CLOCK_TIME_NONE;
   priv->render = NULL;
   priv->cb_alloc_num = 0;
   priv->cb_rel_num = 0;
@@ -806,6 +814,12 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
     priv->low_latency = g_value_get_boolean(value);
     break;
   }
+  case PROP_START_PTS:
+  {
+    priv->start_pts = gst_util_uint64_scale_int (g_value_get_uint(value), GST_SECOND,  90000);
+    GST_WARNING ("start pts %lld", priv->start_pts);
+    break;
+  }
   default:
   G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
   break;
@@ -842,6 +856,11 @@ static void gst_aml_vsink_get_property (GObject * object, guint property_id,
   case PROP_IMMEDIATE_OUTPUT:
   {
     g_value_set_int(value, priv->low_latency);
+    break;
+  }
+  case PROP_START_PTS:
+  {
+    g_value_set_int(value, gst_util_uint64_scale_int (priv->start_pts, 90000, GST_SECOND));
     break;
   }
   default:
@@ -1693,8 +1712,10 @@ static gpointer video_decode_thread(gpointer data)
     }
 
     frame_ts = GST_TIMEVAL_TO_TIME(cb->buf.timestamp);
-    if (frame_ts < priv->segment.start) {
-      GST_INFO ("drop frame %lld before start %lld", frame_ts, priv->segment.start);
+    if (frame_ts < priv->segment.start ||
+        (priv->start_pts != GST_CLOCK_TIME_NONE && frame_ts < priv->start_pts)) {
+      GST_INFO ("drop frame %lld before seg start %lld start pts %lld",
+          frame_ts, priv->segment.start, priv->start_pts);
       pthread_mutex_lock (&priv->res_lock);
       v4l_queue_capture_buffer (priv->fd, cb);
       pthread_mutex_unlock (&priv->res_lock);
