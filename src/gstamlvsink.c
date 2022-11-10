@@ -1355,8 +1355,8 @@ static void update_stretch_window(GstAmlVsinkPrivate *priv)
     h = priv->screen_h;
 
   if (w && h) {
-    cmp_w = priv->visible_w * priv->pixel_w * h;
-    cmp_h = priv->visible_h * priv->pixel_h * w;
+    cmp_w = (int64_t)priv->visible_w * priv->pixel_w * h;
+    cmp_h = (int64_t)priv->visible_h * priv->pixel_h * w;
 
     if (cmp_w > cmp_h) {
       delta = h * cmp_h / cmp_w;
