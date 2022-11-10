@@ -689,8 +689,7 @@ static void sync_frame_free(struct vframe * sync_frame)
   }
 }
 
-int display_engine_show(void* handle, struct drm_frame* frame,
-        struct rect* window, struct rect* src_window)
+int display_engine_show(void* handle, struct drm_frame* frame, struct rect* src_window)
 {
   struct video_disp *disp = handle;
   int rc;
@@ -700,7 +699,7 @@ int display_engine_show(void* handle, struct drm_frame* frame,
     GST_ERROR ("avsync not started");
     return -1;
   }
-  if (!window || !src_window) {
+  if (!src_window) {
     GST_ERROR ("invalid window pointer");
     return -1;
   }
@@ -709,11 +708,6 @@ int display_engine_show(void* handle, struct drm_frame* frame,
   sync_frame->duration = frame->duration;
   sync_frame->free = sync_frame_free;
   frame->source_window = *src_window;
-  if (memcmp(&disp->dst_win, window, sizeof(*window))) {
-    g_rw_lock_writer_lock (&disp->scale_lock);
-    memcpy (&disp->dst_win, window, sizeof(*window));
-    g_rw_lock_writer_unlock (&disp->scale_lock);
-  }
 
   if (!disp->low_latency) {
     rc = av_sync_push_frame(disp->avsync, sync_frame);
@@ -802,4 +796,15 @@ int display_set_speed(void *handle, float speed)
   pthread_mutex_unlock (&disp->avsync_lock);
 
   return 0;
+}
+
+void display_engine_set_dst_rect(void *handle, struct rect *window)
+{
+  struct video_disp *disp = handle;
+
+  if (memcmp(&disp->dst_win, window, sizeof(*window))) {
+    g_rw_lock_writer_lock (&disp->scale_lock);
+    memcpy (&disp->dst_win, window, sizeof(*window));
+    g_rw_lock_writer_unlock (&disp->scale_lock);
+  }
 }

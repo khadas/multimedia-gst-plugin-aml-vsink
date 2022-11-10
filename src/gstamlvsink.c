@@ -1339,6 +1339,7 @@ static void update_stretch_window(GstAmlVsinkPrivate *priv)
 {
   int32_t x, y, w, h;
   int64_t cmp_w, cmp_h, delta;
+  struct rect *win;
 
   if (!priv || priv->stretch_mode == 0)
     return;
@@ -1372,6 +1373,13 @@ static void update_stretch_window(GstAmlVsinkPrivate *priv)
   priv->stretch_window.y = y;
   priv->stretch_window.w = w;
   priv->stretch_window.h = h;
+
+  if (priv->stretch_mode == 0)
+    win = &priv->window;
+  else
+    win = &priv->stretch_window;
+
+  display_engine_set_dst_rect(priv->render, win);
   GST_DEBUG ("stretch [%d %d %d %d] => [%d %d %d %d]",
       priv->window.x, priv->window.y,
       priv->window.w, priv->window.h,
@@ -1652,7 +1660,6 @@ static gpointer video_decode_thread(gpointer data)
   while (!priv->quitVideoOutputThread) {
     gint64 frame_ts;
     struct capture_buffer *cb;
-    struct rect *win;
     struct rect src_win;
     struct pollfd pfd = {
         /* default blocking capture */
@@ -1748,11 +1755,6 @@ static gpointer video_decode_thread(gpointer data)
     cb->drm_frame->pts = gst_util_uint64_scale_int (frame_ts, PTS_90K, GST_SECOND);
 
     cb->displayed = true;
-    if (priv->stretch_mode == 0)
-      win = &priv->window;
-    else
-      win = &priv->stretch_window;
-
     GST_OBJECT_LOCK (sink);
     if (priv->src_rec_set) {
       src_win.x = priv->visible_dw_w * priv->source_window.x;
@@ -1767,7 +1769,7 @@ static gpointer video_decode_thread(gpointer data)
     }
 
     if (priv->render) {
-      rc = display_engine_show (priv->render, cb->drm_frame, win, &src_win);
+      rc = display_engine_show (priv->render, cb->drm_frame, &src_win);
       if (rc)
         GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
       else
