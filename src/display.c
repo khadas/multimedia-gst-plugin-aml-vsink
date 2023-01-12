@@ -672,19 +672,23 @@ static void * recycle_thread_func(void * arg)
 static void sync_frame_free(struct vframe * sync_frame)
 {
   struct drm_frame* drm_f = sync_frame->private;
-  struct video_disp *disp = drm_f->pri_drm;
+  struct video_disp *disp;
+
+
+  if (!drm_f) {
+    disp->last_frame = true;
+    GST_INFO ("last frame detected");
+    return;
+  }
+
+  disp = drm_f->pri_drm;
 
   if (!disp) {
     GST_ERROR ("invalid arg");
     return;
   }
 
-  if (drm_f) {
-    display_cb(disp->priv, drm_f->pri_dec, false, false);
-  } else {
-    disp->last_frame = true;
-    GST_INFO ("last frame detected");
-  }
+  display_cb(disp->priv, drm_f->pri_dec, false, false);
 }
 
 int display_engine_show(void* handle, struct drm_frame* frame, struct rect* src_window)

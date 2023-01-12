@@ -516,10 +516,9 @@ static gboolean check_vdec(GstAmlVsinkClass *klass)
   }
 
   GST_TRACE ("done");
-  close (fd);
   ret = TRUE;
 error:
-  if (fd > 0)
+  if (fd >= 0)
     close (fd);
 
   if (formats)
@@ -983,7 +982,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   if (gst_structure_get_int (structure, "height", &height))
       priv->es_height = height;
   else
-      priv->es_width = -1;
+      priv->es_height = -1;
 
   /* setup double write mode */
   switch (priv->output_format) {
@@ -1268,6 +1267,7 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
       GST_OBJECT_LOCK (sink);
       priv->group_done = TRUE;
       GST_OBJECT_UNLOCK (sink);
+      break;
     }
     default:
     {

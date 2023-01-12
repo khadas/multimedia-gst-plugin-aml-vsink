@@ -87,7 +87,7 @@ int v4l_dec_open(bool sanity_check)
 
   return fd;
 error:
-  if (fd > 0 )
+  if (fd >= 0 )
     close( fd );
 
   return -1;
