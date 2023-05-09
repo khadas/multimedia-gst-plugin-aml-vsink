@@ -28,6 +28,7 @@
 
 #include "v4l-dec.h"
 #include "aml_driver.h"
+#include <gst/video/video-color.h>
 
 GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
 #define GST_CAT_DEFAULT gst_aml_vsink_debug
@@ -87,7 +88,7 @@ int v4l_dec_open(bool sanity_check)
 
   return fd;
 error:
-  if (fd >= 0 )
+  if (fd > 0 )
     close( fd );
 
   return -1;
@@ -559,13 +560,13 @@ static int config_margin_buffer_number (uint32_t fmt, bool only_2k, float frame_
   else if (fmt == V4L2_PIX_FMT_AV1 && only_2k)
     num = EXTRA_CAPTURE_BUFFERS - 1;
   else if (fmt == V4L2_PIX_FMT_MPEG2 || fmt == V4L2_PIX_FMT_MPEG1)
-    num = 0; /* use driver default */
+    num = EXTRA_CAPTURE_BUFFERS + 1; /* set to 5, fix stutter issue after enable DI*/
 
   return num;
 }
 
 int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,bool low_latency,
-      bool only_2k, float frame_rate)
+      bool only_2k, int frame_rate, struct hdr_meta *hdr)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -576,8 +577,144 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,bool low_latency,
   decParm->parms_status = V4L2_CONFIG_PARM_DECODE_CFGINFO;
   decParm->cfg.double_write_mode = dw_mode;
   decParm->cfg.low_latency_mode = low_latency;
-  GST_DEBUG("luohang: set low_latency %d",decParm->cfg.low_latency_mode);
   decParm->cfg.ref_buf_margin = config_margin_buffer_number(fmt, only_2k, frame_rate);
+
+  if (hdr->haveColorimetry || hdr->haveMasteringDisplay ||
+      hdr->haveContentLightLevel) {
+    decParm->parms_status |= V4L2_CONFIG_PARM_DECODE_HDRINFO;
+
+    if (hdr->haveColorimetry) {
+      decParm->hdr.signal_type = (1<<29); /* present flag */
+      /* range */
+      switch (hdr->Colorimetry[0]) {
+        case GST_VIDEO_COLOR_RANGE_0_255:
+        case GST_VIDEO_COLOR_RANGE_16_235:
+          decParm->hdr.signal_type |= ((hdr->Colorimetry[0] % 2)<<25);
+          break;
+        default:
+          break;
+      }
+      /* matrix coefficient */
+      switch (hdr->Colorimetry[1]) {
+        case GST_VIDEO_COLOR_MATRIX_RGB: /* RGB */
+          decParm->hdr.signal_type |= 0;
+          break;
+        case GST_VIDEO_COLOR_MATRIX_FCC: /* FCC */
+          decParm->hdr.signal_type |= 4;
+          break;
+        case GST_VIDEO_COLOR_MATRIX_BT709: /* BT709 */
+          decParm->hdr.signal_type |= 1;
+          break;
+        case GST_VIDEO_COLOR_MATRIX_BT601: /* BT601 */
+          decParm->hdr.signal_type |= 3;
+          break;
+        case GST_VIDEO_COLOR_MATRIX_SMPTE240M: /* SMPTE240M */
+          decParm->hdr.signal_type |= 7;
+          break;
+        case GST_VIDEO_COLOR_MATRIX_BT2020: /* BT2020 */
+          decParm->hdr.signal_type |= 10;
+          break;
+        default: /* unknown */
+          decParm->hdr.signal_type |= 2;
+          break;
+      }
+      /* transfer function */
+      switch (hdr->Colorimetry[2]) {
+        case GST_VIDEO_TRANSFER_BT709: /* BT709 */
+          decParm->hdr.signal_type |= (1<<8);
+          break;
+        case GST_VIDEO_TRANSFER_SMPTE240M: /* SMPTE240M */
+          decParm->hdr.signal_type |= (7<<8);
+          break;
+        case GST_VIDEO_TRANSFER_LOG100: /* LOG100 */
+          decParm->hdr.signal_type |= (9<<8);
+          break;
+        case GST_VIDEO_TRANSFER_LOG316: /* LOG316 */
+          decParm->hdr.signal_type |= (10<<8);
+          break;
+        case GST_VIDEO_TRANSFER_BT2020_12: /* BT2020_12 */
+          decParm->hdr.signal_type |= (15<<8);
+          break;
+        case GST_VIDEO_TRANSFER_BT2020_10: /* BT2020_10 */
+          decParm->hdr.signal_type |= (14<<8);
+          break;
+#if ((GST_VERSION_MAJOR == 1) && (GST_VERSION_MINOR >= 18))
+        case GST_VIDEO_TRANSFER_SMPTE2084: /* SMPTE2084 */
+#else
+        case GST_VIDEO_TRANSFER_SMPTE_ST_2084: /* SMPTE2084 */
+#endif
+          decParm->hdr.signal_type |= (16<<8);
+          break;
+        case GST_VIDEO_TRANSFER_BT601: /* BT601 */
+          decParm->hdr.signal_type |= (3<<8);
+          break;
+        case GST_VIDEO_TRANSFER_ARIB_STD_B67: /* ARIB_STD_B76 */
+          decParm->hdr.signal_type |= (18<<8);
+          break;
+        case GST_VIDEO_TRANSFER_GAMMA10: /* GAMMA10 */
+        case GST_VIDEO_TRANSFER_GAMMA18: /* GAMMA18 */
+        case GST_VIDEO_TRANSFER_GAMMA20: /* GAMMA20 */
+        case GST_VIDEO_TRANSFER_GAMMA22: /* GAMMA22 */
+        case GST_VIDEO_TRANSFER_SRGB: /* SRGB */
+        case GST_VIDEO_TRANSFER_GAMMA28: /* GAMMA28 */
+        case GST_VIDEO_TRANSFER_ADOBERGB: /* ADOBERGB */
+        default:
+          break;
+      }
+      /* primaries */
+      switch (hdr->Colorimetry[3]) {
+        case GST_VIDEO_COLOR_PRIMARIES_BT709: /* BT709 */
+          decParm->hdr.signal_type |= ((1<<24)|(1<<16));
+          break;
+        case GST_VIDEO_COLOR_PRIMARIES_BT470M: /* BT470M */
+          decParm->hdr.signal_type |= ((1<<24)|(4<<16));
+          break;
+        case GST_VIDEO_COLOR_PRIMARIES_BT470BG: /* BT470BG */
+          decParm->hdr.signal_type |= ((1<<24)|(5<<16));
+          break;
+        case GST_VIDEO_COLOR_PRIMARIES_SMPTE170M: /* SMPTE170M */
+          decParm->hdr.signal_type |= ((1<<24)|(6<<16));
+          break;
+        case GST_VIDEO_COLOR_PRIMARIES_SMPTE240M: /* SMPTE240M */
+          decParm->hdr.signal_type |= ((1<<24)|(7<<16));
+          break;
+        case GST_VIDEO_COLOR_PRIMARIES_FILM: /* FILM */
+          decParm->hdr.signal_type |= ((1<<24)|(8<<16));
+          break;
+        case GST_VIDEO_COLOR_PRIMARIES_BT2020: /* BT2020 */
+          decParm->hdr.signal_type |= ((1<<24)|(9<<16));
+          break;
+        case GST_VIDEO_COLOR_PRIMARIES_ADOBERGB: /* ADOBERGB */
+#if ((GST_VERSION_MAJOR == 1) && (GST_VERSION_MINOR >= 18))
+        case GST_VIDEO_COLOR_PRIMARIES_SMPTEST428:
+        case GST_VIDEO_COLOR_PRIMARIES_SMPTERP431:
+        case GST_VIDEO_COLOR_PRIMARIES_SMPTEEG432:
+        case GST_VIDEO_COLOR_PRIMARIES_EBU3213:
+#endif
+        default:
+          break;
+      }
+    }
+
+    if (hdr->haveMasteringDisplay) {
+      decParm->hdr.color_parms.present_flag= 1;
+      decParm->hdr.color_parms.primaries[2][0]= (uint32_t)(hdr->MasteringDisplay[0]*50000); /* R.x */
+      decParm->hdr.color_parms.primaries[2][1]= (uint32_t)(hdr->MasteringDisplay[1]*50000); /* R.y */
+      decParm->hdr.color_parms.primaries[0][0]= (uint32_t)(hdr->MasteringDisplay[2]*50000); /* G.x */
+      decParm->hdr.color_parms.primaries[0][1]= (uint32_t)(hdr->MasteringDisplay[3]*50000); /* G.y */
+      decParm->hdr.color_parms.primaries[1][0]= (uint32_t)(hdr->MasteringDisplay[4]*50000); /* B.x */
+      decParm->hdr.color_parms.primaries[1][1]= (uint32_t)(hdr->MasteringDisplay[5]*50000); /* B.y */
+      decParm->hdr.color_parms.white_point[0]= (uint32_t)(hdr->MasteringDisplay[6]*50000);
+      decParm->hdr.color_parms.white_point[1]= (uint32_t)(hdr->MasteringDisplay[7]*50000);
+      decParm->hdr.color_parms.luminance[0]= (uint32_t)(hdr->MasteringDisplay[8]);
+      decParm->hdr.color_parms.luminance[1]= (uint32_t)(hdr->MasteringDisplay[9]);
+    }
+
+    if (hdr->haveContentLightLevel) {
+      decParm->hdr.color_parms.content_light_level.max_content= hdr->ContentLightLevel[0];
+      decParm->hdr.color_parms.content_light_level.max_pic_average= hdr->ContentLightLevel[1];
+    }
+  }
 
   rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
   if (rc)
@@ -587,7 +724,7 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,bool low_latency,
 }
 
 int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
-    struct hdr_meta *hdr, bool is_2k_only, float frame_rate, bool disable_dw_scale)
+    bool is_2k_only, float frame_rate, bool disable_dw_scale)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -601,6 +738,15 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   if (rc) {
     GST_ERROR ("VIDIOC_G_FMT cap error %d", errno);
     return rc;
+  }
+  if (fmt == V4L2_PIX_FMT_H264 && v4l_fmt.fmt.pix_mp.field != V4L2_FIELD_NONE && dw_mode != VDEC_DW_NO_AFBC) {
+    dw_mode = VDEC_DW_NO_AFBC;
+    GST_INFO ("Force change h264 interlace dw_mode:%d", dw_mode);
+  }
+
+  if (fmt == V4L2_PIX_FMT_HEVC && v4l_fmt.fmt.pix_mp.field != V4L2_FIELD_NONE) {
+    dw_mode = VDEC_DW_AFBC_1_1_DW;
+    GST_INFO("Force change HEVC interlace dw_mode:%d", dw_mode);
   }
 
   w = v4l_fmt.fmt.pix_mp.width;
@@ -626,134 +772,9 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   if (fmt != V4L2_PIX_FMT_MPEG2)
     decParm->cfg.ref_buf_margin =
       config_margin_buffer_number(fmt, is_2k_only, frame_rate);
-  decParm->cfg.metadata_config_flag |= (1 << 12);
+  decParm->cfg.metadata_config_flag |= (0 << 12);
   if (!disable_dw_scale)
     decParm->cfg.metadata_config_flag |= (1 << 13);
-
-
-	if (hdr->haveColorimetry || hdr->haveMasteringDisplay ||
-			hdr->haveContentLightLevel) {
-		decParm->parms_status |= V4L2_CONFIG_PARM_DECODE_HDRINFO;
-		if (hdr->haveColorimetry) {
-			decParm->hdr.signal_type = (1<<29); /* present flag */
-			/* range */
-			switch (hdr->Colorimetry[0]) {
-      case 1:
-			case 2:
-			  decParm->hdr.signal_type |= ((hdr->Colorimetry[0] % 2)<<25);
-        break;
-			default:
-				break;
-			}
-			/* matrix coefficient */
-			switch (hdr->Colorimetry[1]) {
-      case 1: /* RGB */
-        decParm->hdr.signal_type |= 0;
-        break;
-      case 2: /* FCC */
-        decParm->hdr.signal_type |= 4;
-        break;
-      case 3: /* BT709 */
-        decParm->hdr.signal_type |= 1;
-        break;
-      case 4: /* BT601 */
-        decParm->hdr.signal_type |= 3;
-        break;
-      case 5: /* SMPTE240M */
-        decParm->hdr.signal_type |= 7;
-        break;
-      case 6: /* BT2020 */
-        decParm->hdr.signal_type |= 10;
-        break;
-      default: /* unknown */
-        decParm->hdr.signal_type |= 2;
-        break;
-			}
-			/* transfer function */
-			switch (hdr->Colorimetry[2]) {
-      case 5: /* BT709 */
-          decParm->hdr.signal_type |= (1<<8);
-        break;
-      case 6: /* SMPTE240M */
-        decParm->hdr.signal_type |= (7<<8);
-        break;
-      case 9: /* LOG100 */
-        decParm->hdr.signal_type |= (9<<8);
-        break;
-      case 10: /* LOG316 */
-        decParm->hdr.signal_type |= (10<<8);
-        break;
-      case 11: /* BT2020_12 */
-        decParm->hdr.signal_type |= (15<<8);
-        break;
-      case 13: /* BT2020_10 */
-        decParm->hdr.signal_type |= (14<<8);
-        break;
-      case 14: /* SMPTE2084 */
-        decParm->hdr.signal_type |= (16<<8);
-        break;
-      case 16: /* BT601 */
-        decParm->hdr.signal_type |= (3<<8);
-        break;
-      case 1: /* GAMMA10 */
-      case 2: /* GAMMA18 */
-      case 3: /* GAMMA20 */
-      case 4: /* GAMMA22 */
-      case 7: /* SRGB */
-      case 8: /* GAMMA28 */
-      case 12: /* ADOBERGB */
-      case 15: /* ARIB_STD_B76 */
-      default:
-        break;
-      }
-      /* primaries */
-      switch (hdr->Colorimetry[3]) {
-      case 1: /* BT709 */
-        decParm->hdr.signal_type |= ((1<<24)|(1<<16));
-        break;
-      case 2: /* BT470M */
-        decParm->hdr.signal_type |= ((1<<24)|(4<<16));
-        break;
-      case 3: /* BT470BG */
-        decParm->hdr.signal_type |= ((1<<24)|(5<<16));
-        break;
-      case 4: /* SMPTE170M */
-        decParm->hdr.signal_type |= ((1<<24)|(6<<16));
-        break;
-      case 5: /* SMPTE240M */
-        decParm->hdr.signal_type |= ((1<<24)|(7<<16));
-        break;
-      case 6: /* FILM */
-        decParm->hdr.signal_type |= ((1<<24)|(8<<16));
-        break;
-      case 7: /* BT2020 */
-        decParm->hdr.signal_type |= ((1<<24)|(9<<16));
-        break;
-      case 8: /* ADOBERGB */
-      default:
-        break;
-      }
-    }
-
-    if (hdr->haveMasteringDisplay) {
-      decParm->hdr.color_parms.present_flag= 1;
-      decParm->hdr.color_parms.primaries[2][0]= (uint32_t)(hdr->MasteringDisplay[0]*50000); /* R.x */
-      decParm->hdr.color_parms.primaries[2][1]= (uint32_t)(hdr->MasteringDisplay[1]*50000); /* R.y */
-      decParm->hdr.color_parms.primaries[0][0]= (uint32_t)(hdr->MasteringDisplay[2]*50000); /* G.x */
-      decParm->hdr.color_parms.primaries[0][1]= (uint32_t)(hdr->MasteringDisplay[3]*50000); /* G.y */
-      decParm->hdr.color_parms.primaries[1][0]= (uint32_t)(hdr->MasteringDisplay[4]*50000); /* B.x */
-      decParm->hdr.color_parms.primaries[1][1]= (uint32_t)(hdr->MasteringDisplay[5]*50000); /* B.y */
-      decParm->hdr.color_parms.white_point[0]= (uint32_t)(hdr->MasteringDisplay[6]*50000);
-      decParm->hdr.color_parms.white_point[1]= (uint32_t)(hdr->MasteringDisplay[7]*50000);
-      decParm->hdr.color_parms.luminance[0]= (uint32_t)(hdr->MasteringDisplay[8]);
-      decParm->hdr.color_parms.luminance[1]= (uint32_t)(hdr->MasteringDisplay[9]);
-    }
-
-    if (hdr->haveContentLightLevel) {
-        decParm->hdr.color_parms.content_light_level.max_content= hdr->ContentLightLevel[0];
-        decParm->hdr.color_parms.content_light_level.max_pic_average= hdr->ContentLightLevel[1];
-    }
-	}
 
   rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
   if (rc)

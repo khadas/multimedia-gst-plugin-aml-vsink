@@ -47,6 +47,10 @@ struct drm_frame {
   drm_frame_destroy destroy;
 
   void *vaddr; /* for black frame use only */
+  void *vaddr1;
+  uint32_t stride;
+  uint32_t height;
+
   uint32_t pts;
   void* pri_sync;
   uint32_t duration;
@@ -82,4 +86,5 @@ int display_set_pause_pts(void *handle, uint32_t pause_pts);
 int display_set_speed(void *handle, float speed);
 int display_set_checkunderflow(void *handle, bool underflow_check);
 void display_engine_refresh(void* handle, struct rect *dst, struct rect *src);
+void display_set_video_delay(void* handle, int delay_ms);
 #endif

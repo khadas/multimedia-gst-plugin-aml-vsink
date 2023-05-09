@@ -50,6 +50,12 @@
 GST_DEBUG_CATEGORY_EXTERN(gst_aml_vsink_debug);
 #define GST_CAT_DEFAULT gst_aml_vsink_debug
 
+enum {
+  BF_INVALID = 0,
+  BF_WAIT_AV_SYNC,
+  BF_WAIT_RENDER,
+};
+
 struct video_disp {
   struct drm_display *drm;
   bool last_frame;
@@ -59,6 +65,7 @@ struct video_disp {
   uint32_t pause_pts;
   bool check_underflow;
   struct drm_frame *black_frame;
+  int black_frame_pending;
   struct drm_frame *cur_frame;
 
 
@@ -140,6 +147,7 @@ void *display_engine_start(void* priv, bool pip, bool low_latency)
   pthread_mutex_init (&disp->fq_lock, NULL);
 
   disp->black_frame = create_black_frame (disp, 64, 64, pip);
+  disp->black_frame_pending = BF_INVALID;
   disp->cur_frame = NULL;
   g_rw_lock_init (&disp->scale_lock);
   /* avsync log level */
@@ -173,6 +181,8 @@ int display_start_avsync(void *handle, enum sync_mode mode, int id, int delay)
 {
   struct video_disp * disp = handle;
   int ret = 0;
+
+  disp->black_frame_pending = BF_INVALID;
 
   if (!disp->low_latency) {
     struct video_config config;
@@ -223,6 +233,7 @@ int display_start_avsync(void *handle, enum sync_mode mode, int id, int delay)
       return -1;
     }
   }
+
   if (!disp->disp_started) {
     int rc;
     disp->disp_started = true;
@@ -281,6 +292,10 @@ void display_stop_avsync(void *handle)
     disp->session = -1;
   }
   disp->speed_pending = false;
+  if (disp->black_frame_pending == BF_WAIT_AV_SYNC) {
+    disp->black_frame_pending = BF_WAIT_RENDER;
+    GST_INFO ("show black frame stat: %d", disp->black_frame_pending);
+  }
   pthread_mutex_unlock (&disp->avsync_lock);
 }
 
@@ -301,6 +316,7 @@ static struct drm_frame* create_black_frame (void* handle,
   struct drm_buf *gem_buf;
   struct drm_buf_metadata info;
   struct drm_frame* frame = calloc(1, sizeof(*frame));
+  uint32_t stride = (width + 63) & (~63);
 
   if (!frame) {
     GST_ERROR ("oom\n");
@@ -312,8 +328,8 @@ static struct drm_frame* create_black_frame (void* handle,
   /* use single planar for black frame */
   info.width = width;
   info.height = height;
-  info.flags = 0;
-  info.fourcc = DRM_FORMAT_YUYV;
+  info.flags = MESON_USE_VIDEO_PLANE;
+  info.fourcc = DRM_FORMAT_NV12;
 
   if (!pip)
     info.flags |= MESON_USE_VD1;
@@ -328,23 +344,40 @@ static struct drm_frame* create_black_frame (void* handle,
 
   frame->buf = gem_buf;
   frame->pri_drm = handle;
+  frame->stride = stride;
+  frame->height = height;
   frame->destroy = frame_destroy;
 
-  frame->vaddr = mmap (NULL, width * height * 2, PROT_WRITE,
-      MAP_SHARED, gem_buf->fd[0], gem_buf->offsets[0]);
-
+  frame->vaddr = mmap (NULL, stride * height, PROT_WRITE | PROT_READ,
+      MAP_SHARED, gem_buf->fd[0], 0);
   if (frame->vaddr == MAP_FAILED) {
     GST_ERROR ("mmap fail %d", errno);
     drm_free_buf (gem_buf);
     goto error;
   }
 
+  frame->vaddr1 = mmap (NULL, stride * height / 2, PROT_WRITE | PROT_READ,
+      MAP_SHARED, gem_buf->fd[1], 0);
+  if (frame->vaddr1 == MAP_FAILED) {
+    GST_ERROR ("mmap fail %d", errno);
+    munmap (frame->vaddr, stride * height);
+    drm_free_buf (gem_buf);
+    goto error;
+  }
+
   /* full screen black frame */
-  memset (frame->vaddr, 0, width * height * 2);
+  memset(frame->vaddr, 0, stride * height);
+  memset(frame->vaddr1, 0x80, stride * height / 2);
+
+  gem_buf->src_x = 0;
+  gem_buf->src_y = 0;
+  gem_buf->src_w = width;
+  gem_buf->src_h = height;
+
   gem_buf->crtc_x = 0;
   gem_buf->crtc_y = 0;
-  gem_buf->crtc_w = -1;
-  gem_buf->crtc_h = -1;
+  gem_buf->crtc_w = 0;
+  gem_buf->crtc_h = 0;
 
   return frame;
 error:
@@ -357,7 +390,8 @@ static void destroy_black_frame (struct drm_frame *frame)
   if (!frame)
     return;
 
-  munmap (frame->vaddr, frame->buf->width * frame->buf->height * 2);
+  munmap (frame->vaddr, frame->stride * frame->height);
+  munmap (frame->vaddr1, frame->stride * frame->height / 2);
   frame_destroy (frame);
 }
 
@@ -507,10 +541,16 @@ void display_engine_refresh(void* handle, struct rect *dst, struct rect *src)
 static void * display_thread_func(void * arg)
 {
   struct video_disp *disp = arg;
-  struct drm_frame *f = NULL, *f_old = NULL, *f_old_old = NULL;
+  struct drm_frame *f = NULL, *f_old = NULL;
   bool first_frame_rendered = false;
   drmVBlank vbl;
   struct sched_param schedParam;
+  int lastVsync_Cnt = -1;
+
+  GST_DEBUG ("enter");
+  prctl (PR_SET_NAME, "aml_v_dis");
+  memset(&vbl, 0, sizeof(drmVBlank));
+
   schedParam.sched_priority = sched_get_priority_max(SCHED_FIFO);
   if (pthread_setschedparam (pthread_self(), SCHED_FIFO, &schedParam))
     GST_WARNING ("fail to set display_thread_func priority");
@@ -525,10 +565,6 @@ static void * display_thread_func(void * arg)
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset))
       GST_WARNING ("fail to set cpu affinity");
   }
-
-  GST_DEBUG ("enter");
-  prctl (PR_SET_NAME, "aml_v_dis");
-  memset(&vbl, 0, sizeof(drmVBlank));
 
   while (disp->disp_started) {
     int rc;
@@ -575,10 +611,21 @@ static void * display_thread_func(void * arg)
       } while (pop_frame);
       pthread_mutex_unlock (&disp->fq_lock);
     }
+
+    /* handle black frame here so black frame is also inserted
+     * after all valid frames */
     if (!sync_frame) {
+      lastVsync_Cnt++;
+      if (disp->black_frame_pending == BF_WAIT_RENDER) {
+        drm_post_buf (disp->drm, disp->black_frame->buf);
+        disp->black_frame_pending = BF_INVALID;
+        lastVsync_Cnt = 0;
+        GST_INFO ("show black frame stat: 3");
+      }
       usleep(1000);
       continue;
     }
+
     if (!first_frame_rendered)
       log_info("vsink rendering first ts");
 
@@ -613,24 +660,29 @@ static void * display_thread_func(void * arg)
       /* when next two frame are posted, fence can be retrieved.
        * So introduce two frames delay here
        */
-      if (f_old_old) {
-        rc = queue_item (disp->recycle_q, f_old_old);
+      if (f_old) {
+        rc = queue_item (disp->recycle_q, f_old);
         if (rc) {
           GST_ERROR ("queue fail %d qlen %d", rc, queue_size(disp->recycle_q));
-          display_cb(disp->priv, f_old_old->pri_dec, true, false);
+          display_cb(disp->priv, f_old->pri_dec, true, false);
         }
       }
 
-      f_old_old = f_old;
       f_old = f;
       disp->cur_frame = f;
       first_frame_rendered = true;
+      lastVsync_Cnt = 0;
     }
   }
-  if (f_old_old)
-     display_cb(disp->priv, f_old_old->pri_dec, true, true);
+
+  if (lastVsync_Cnt != -1 && lastVsync_Cnt < 2) {
+    GST_LOG ("wait about 2 vsync for last frame");
+    usleep(40000);
+  }
+
   if (f_old)
      display_cb(disp->priv, f_old->pri_dec, true, true);
+
   GST_INFO ("quit %s", __func__);
   return NULL;
 }
@@ -654,6 +706,10 @@ static void * recycle_thread_func(void * arg)
       usleep(5000);
       continue;
     }
+    if (!f) {
+      usleep(5000);
+      continue;
+    }
     gem_buf = f->buf;
     rc = drm_waitvideoFence(gem_buf->fd[0]);
     if (rc <= 0)
@@ -672,23 +728,19 @@ static void * recycle_thread_func(void * arg)
 static void sync_frame_free(struct vframe * sync_frame)
 {
   struct drm_frame* drm_f = sync_frame->private;
-  struct video_disp *disp;
-
-
-  if (!drm_f) {
-    disp->last_frame = true;
-    GST_INFO ("last frame detected");
-    return;
-  }
-
-  disp = drm_f->pri_drm;
+  struct video_disp *disp = drm_f->pri_drm;
 
   if (!disp) {
     GST_ERROR ("invalid arg");
     return;
   }
 
-  display_cb(disp->priv, drm_f->pri_dec, false, false);
+  if (drm_f) {
+    display_cb(disp->priv, drm_f->pri_dec, false, false);
+  } else {
+    disp->last_frame = true;
+    GST_INFO ("last frame detected");
+  }
 }
 
 int display_engine_show(void* handle, struct drm_frame* frame, struct rect* src_window)
@@ -705,6 +757,7 @@ int display_engine_show(void* handle, struct drm_frame* frame, struct rect* src_
     GST_ERROR ("invalid window pointer");
     return -1;
   }
+
   sync_frame->private = frame;
   sync_frame->pts = frame->pts;
   sync_frame->duration = frame->duration;
@@ -756,10 +809,13 @@ int display_set_pause(void *handle, bool pause)
 
   GST_INFO ("pause %d", pause);
   if (!disp->low_latency) {
-    pthread_mutex_lock (&disp->avsync_lock);
-    rc = av_sync_pause (disp->avsync, pause);
-    disp->paused = pause;
-    pthread_mutex_unlock (&disp->avsync_lock);
+    /* don't need avsync_lock here, because object lock will be used
+     * for race condition
+     */
+    if (disp->avsync) {
+      rc = av_sync_pause (disp->avsync, pause);
+      disp->paused = pause;
+    }
   }
   return rc;
 }
@@ -776,8 +832,13 @@ int display_show_black_frame(void * handle)
 {
   struct video_disp *disp = handle;
 
-  GST_INFO ("show black frame");
-  return drm_post_buf (disp->drm, disp->black_frame->buf);
+  pthread_mutex_lock (&disp->avsync_lock);
+  if (disp->avsync)
+    disp->black_frame_pending = BF_WAIT_AV_SYNC;
+  else
+    disp->black_frame_pending = BF_WAIT_RENDER;
+  GST_INFO ("show black frame stat: %d", disp->black_frame_pending);
+  pthread_mutex_unlock (&disp->avsync_lock);
 }
 
 int display_set_speed(void *handle, float speed)
@@ -809,4 +870,22 @@ void display_engine_set_dst_rect(void *handle, struct rect *window)
     memcpy (&disp->dst_win, window, sizeof(*window));
     g_rw_lock_writer_unlock (&disp->scale_lock);
   }
+}
+
+void display_set_video_delay(void *handle, int delay_ms)
+{
+  struct video_disp *disp = handle;
+  struct video_config config;
+
+  if (!disp)
+    return;
+
+  pthread_mutex_lock (&disp->avsync_lock);
+  if (disp->avsync) {
+    memset(&config, 0, sizeof(struct video_config));
+    config.delay = 2;
+    config.extra_delay = delay_ms;
+    av_sync_video_config(disp->avsync, &config);
+  }
+  pthread_mutex_unlock (&disp->avsync_lock);
 }

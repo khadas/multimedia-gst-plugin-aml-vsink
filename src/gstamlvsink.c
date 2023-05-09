@@ -1,5 +1,5 @@
 /* GStreamer
- * Copyright (C) 2020 <song.zhao@amlogic.com>
+ * Copyright (C) 2020 Amlogic, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -16,13 +16,6 @@
  * Free SoftwareFoundation, Inc., 59 Temple Place, Suite 330, Boston,
  * MA 02111-1307 USA
  */
-/**
- * SECTION:element-gstamlvsink
- *
- * The amlvsink element do video layer rendering directly
- *
- */
-
 #include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
@@ -40,10 +33,10 @@
 #include "gstamlvsink.h"
 #include "v4l-dec.h"
 #include "display.h"
-#include "aml_version.h"
 
 GST_DEBUG_CATEGORY (gst_aml_vsink_debug);
 #define GST_CAT_DEFAULT gst_aml_vsink_debug
+#define G_ATOMIC_LOCK_FREE
 
 #define PTS_90K 90000
 
@@ -111,6 +104,10 @@ struct _GstAmlVsinkPrivate
   gboolean quitVideoOutputThread;
   GThread *videoOutputThread;
 
+  /* dq output buffer thread */
+  gboolean quitdqOutputBufferThread;
+  GThread *dqOutputBufferThread;
+
   /* eos wating thread */
   gboolean quit_eos_wait;
   GThread *eos_wait_thread;
@@ -126,7 +123,7 @@ struct _GstAmlVsinkPrivate
   GstCaps *caps;
 
   /* ES info from caps */
-  double fr;
+  int fr;
   int es_width;
   int es_height;
   guint8 *codec_data;
@@ -136,6 +133,7 @@ struct _GstAmlVsinkPrivate
   /* visible dimension before double write */
   int visible_w;
   int visible_h;
+  gboolean interlaced;
   /* pixel aspect ration */
   int pixel_w;
   int pixel_h;
@@ -162,6 +160,7 @@ struct _GstAmlVsinkPrivate
   int cb_rel_num;
   int ob_ref_num;
   int ob_unref_num;
+  int ob_available_num;
   gboolean is_underflow_check;
   /* buffer underflow happened */
   gboolean buf_underflow_fired;
@@ -171,6 +170,14 @@ struct _GstAmlVsinkPrivate
 
   /* lock */
   pthread_mutex_t res_lock;
+
+  /* condition lock for chain and dqueue output thread */
+  GCond   output_buffer_available;
+  GMutex  output_buffer_lock;
+
+  /* status report */
+  gint buf_dec_num;
+  gint buf_dis_num;
 };
 
 enum
@@ -188,6 +195,9 @@ enum
   PROP_SCREEN_SIZE,
   PROP_RENDER_DELAY,
   PROP_UNDERFLOW_CHECK,
+  PROP_VIDEO_WIDTH,
+  PROP_VIDEO_HEIGHT,
+  PROP_VIDEO_INTERLACED,
   PROP_IMMEDIATE_OUTPUT,
   PROP_START_PTS,
   PROP_LAST
@@ -213,6 +223,7 @@ enum
   SIGNAL_FIRSTFRAME,
   SIGNAL_PAUSEPTS,
   SIGNAL_UNDERFLOW,
+  SIGNAL_VIDEO_CHANGE,
   MAX_SIGNAL
 };
 static guint g_signals[MAX_SIGNAL]= {0};
@@ -338,6 +349,21 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
         "support buffer underflow call back",
         FALSE, G_PARAM_WRITABLE));
 
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_VIDEO_WIDTH,
+      g_param_spec_uint ("video-width", "video width",
+        "current video frame width",
+        0, G_MAXUINT, 0, G_PARAM_READABLE));
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_VIDEO_HEIGHT,
+      g_param_spec_uint ("video-height", "video height",
+        "current video frame height",
+        0, G_MAXUINT, 0, G_PARAM_READABLE));
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_VIDEO_INTERLACED,
+      g_param_spec_boolean ("video-interlaced", "video interlaced",
+        "current video is interlaced or not",
+        FALSE, G_PARAM_READABLE));
+
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_IMMEDIATE_OUTPUT,
       g_param_spec_boolean ("immediate-output",
         "immediate output mode, low latency video",
@@ -373,6 +399,18 @@ gst_aml_vsink_class_init (GstAmlVsinkClass * klass)
       G_TYPE_POINTER);
 
   g_signals[SIGNAL_UNDERFLOW]= g_signal_new( "buffer-underflow-callback",
+      G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
+      (GSignalFlags) (G_SIGNAL_RUN_LAST),
+      0,    /* class offset */
+      NULL, /* accumulator */
+      NULL, /* accu data */
+      g_cclosure_marshal_VOID__UINT_POINTER,
+      G_TYPE_NONE,
+      2,
+      G_TYPE_UINT,
+      G_TYPE_POINTER);
+
+  g_signals[SIGNAL_VIDEO_CHANGE]= g_signal_new( "video-change-callback",
       G_TYPE_FROM_CLASS(GST_ELEMENT_CLASS(klass)),
       (GSignalFlags) (G_SIGNAL_RUN_LAST),
       0,    /* class offset */
@@ -516,9 +554,10 @@ static gboolean check_vdec(GstAmlVsinkClass *klass)
   }
 
   GST_TRACE ("done");
+  close (fd);
   ret = TRUE;
 error:
-  if (fd >= 0)
+  if (fd > 0)
     close (fd);
 
   if (formats)
@@ -545,6 +584,8 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   gst_pad_set_event_function (basesink->sinkpad, gst_aml_vsink_pad_event);
   gst_pad_set_chain_function (basesink->sinkpad, gst_aml_vsink_chain);
 
+  g_cond_init (&priv->output_buffer_available);
+  g_mutex_init (&priv->output_buffer_lock);
   pthread_mutex_init (&priv->res_lock, NULL);
   priv->received_eos = FALSE;
   priv->group_id = -1;
@@ -559,7 +600,11 @@ gst_aml_vsink_init (GstAmlVsink* sink)
   priv->is_underflow_check = FALSE;
   priv->buf_underflow_fired = FALSE;
   priv->codec_data = NULL;
+  priv->interlaced = FALSE;
   priv->low_latency = FALSE;
+  priv->buf_dis_num = 0;
+  priv->buf_dec_num = 0;
+  priv->ob_available_num = 0;
 }
 
 static void
@@ -569,6 +614,8 @@ gst_aml_vsink_dispose (GObject * object)
   GstAmlVsinkPrivate *priv = sink->priv;
 
   GST_INFO_OBJECT(sink, "dispose");
+  g_cond_clear (&priv->output_buffer_available);
+  g_mutex_clear (&priv->output_buffer_lock);
   pthread_mutex_destroy (&priv->res_lock);
   G_OBJECT_CLASS (parent_class)->dispose (object);
 }
@@ -621,6 +668,7 @@ gst_aml_vsink_set_property (GObject * object, guint property_id,
   case PROP_RENDER_DELAY:
   {
     priv->delay = g_value_get_uint (value);
+    display_set_video_delay(priv->render, priv->delay);
     GST_WARNING_OBJECT (sink, "render delay %u ms", priv->delay);
     break;
   }
@@ -832,6 +880,21 @@ static void gst_aml_vsink_get_property (GObject * object, guint property_id,
   GstAmlVsinkPrivate *priv = sink->priv;
 
   switch (property_id) {
+  case PROP_VIDEO_WIDTH:
+  {
+    g_value_set_uint(value, priv->visible_w);
+    break;
+  }
+  case PROP_VIDEO_HEIGHT:
+  {
+    g_value_set_uint(value, priv->visible_h);
+    break;
+  }
+  case PROP_VIDEO_INTERLACED:
+  {
+    g_value_set_boolean(value, priv->interlaced);
+    break;
+  }
   case PROP_RENDER_DELAY:
   {
     g_value_set_uint(value, priv->delay);
@@ -966,10 +1029,10 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
       if ( denom == 0 )
           denom= 1;
 
-      priv->fr = (double)num/(double)denom;
-      if (priv->fr <= 0.0) {
-          g_print("assume 60 fps\n");
-          priv->fr = 60.0;
+      priv->fr = num * 100/denom;
+      if (priv->fr <= 0) {
+          GST_WARNING("assume 60 fps\n");
+          priv->fr = 6000;
       }
   }
 
@@ -982,7 +1045,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   if (gst_structure_get_int (structure, "height", &height))
       priv->es_height = height;
   else
-      priv->es_height = -1;
+      priv->es_width = -1;
 
   /* setup double write mode */
   switch (priv->output_format) {
@@ -990,7 +1053,6 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   case V4L2_PIX_FMT_MPEG1:
   case V4L2_PIX_FMT_MPEG2:
   case V4L2_PIX_FMT_MPEG4:
-  case V4L2_PIX_FMT_H264:
     if (priv->dw_mode_user_set) {
       GST_WARNING_OBJECT (sink, "overwrite user dw mode %d --> %d", priv->dw_mode, VDEC_DW_NO_AFBC);
       priv->dw_mode_user_set = FALSE;
@@ -1000,6 +1062,7 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   case V4L2_PIX_FMT_HEVC:
   case V4L2_PIX_FMT_VP9:
   case V4L2_PIX_FMT_AV1:
+  case V4L2_PIX_FMT_H264:
     if (priv->dw_mode_user_set) {
       GST_WARNING_OBJECT (sink, "enforce user dw mode %d", priv->dw_mode);
       break;
@@ -1064,6 +1127,46 @@ static gboolean gst_aml_vsink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 					priv->hdr.MasteringDisplay[9]);
 		}
 	}
+
+#if GST_CHECK_VERSION(1, 18, 0)
+  if (gst_structure_has_field(structure, "mastering-display-info")) {
+    const char *masteringDisplay= gst_structure_get_string(structure,"mastering-display-info");
+
+    if (masteringDisplay &&
+        sscanf( masteringDisplay, "%f:%f:%f:%f:%f:%f:%f:%f:%f:%f",
+          &priv->hdr.MasteringDisplay[0],
+          &priv->hdr.MasteringDisplay[1],
+          &priv->hdr.MasteringDisplay[2],
+          &priv->hdr.MasteringDisplay[3],
+          &priv->hdr.MasteringDisplay[4],
+          &priv->hdr.MasteringDisplay[5],
+          &priv->hdr.MasteringDisplay[6],
+          &priv->hdr.MasteringDisplay[7],
+          &priv->hdr.MasteringDisplay[8],
+          &priv->hdr.MasteringDisplay[9]) == 10) {
+      priv->hdr.haveMasteringDisplay = TRUE;
+      priv->hdr.MasteringDisplay[0] /= 50000.0;
+      priv->hdr.MasteringDisplay[1] /= 50000.0;
+      priv->hdr.MasteringDisplay[2] /= 50000.0;
+      priv->hdr.MasteringDisplay[3] /= 50000.0;
+      priv->hdr.MasteringDisplay[4] /= 50000.0;
+      priv->hdr.MasteringDisplay[5] /= 50000.0;
+      priv->hdr.MasteringDisplay[6] /= 50000.0;
+      priv->hdr.MasteringDisplay[7] /= 50000.0;
+      GST_INFO ("mastering display [%f,%f,%f,%f,%f,%f,%f,%f,%f,%f]",
+          priv->hdr.MasteringDisplay[0],
+          priv->hdr.MasteringDisplay[1],
+          priv->hdr.MasteringDisplay[2],
+          priv->hdr.MasteringDisplay[3],
+          priv->hdr.MasteringDisplay[4],
+          priv->hdr.MasteringDisplay[5],
+          priv->hdr.MasteringDisplay[6],
+          priv->hdr.MasteringDisplay[7],
+          priv->hdr.MasteringDisplay[8],
+          priv->hdr.MasteringDisplay[9]);
+    }
+  }
+#endif
 
 	if (gst_structure_has_field(structure, "content-light-level")) {
 		const char *contentLightLevel = gst_structure_get_string (structure,"content-light-level");
@@ -1267,7 +1370,6 @@ gst_aml_vsink_event (GstAmlVsink *sink, GstEvent * event)
       GST_OBJECT_LOCK (sink);
       priv->group_done = TRUE;
       GST_OBJECT_UNLOCK (sink);
-      break;
     }
     default:
     {
@@ -1410,11 +1512,20 @@ static bool handle_v4l_event (GstAmlVsink *sink)
       (event.u.src_change.changes & V4L2_EVENT_SRC_CH_RESOLUTION) )
   {
     struct v4l2_selection selection;
-    struct v4l2_format fmtOut;
+    struct v4l2_format fmtOut, fmtIn;
     struct v4l2_cropcap cropcap;
     int32_t type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
     GST_WARNING ("source change event");
+
+    memset( &fmtIn, 0, sizeof(fmtIn));
+    fmtIn.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+    rc = ioctl (priv->fd, VIDIOC_G_FMT, &fmtIn );
+    if (fmtIn.fmt.pix_mp.field == V4L2_FIELD_INTERLACED) {
+      GST_INFO ("interlaced stream");
+      priv->interlaced = TRUE;
+    }
+
     memset (&fmtOut, 0, sizeof(fmtOut));
     fmtOut.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     rc = ioctl (priv->fd, VIDIOC_G_FMT, &fmtOut);
@@ -1443,6 +1554,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
         priv->capture_port_config = FALSE;
         priv->cb = NULL;
         priv->cb_num = 0;
+        g_atomic_int_add (&priv->buf_dec_num, -rel_num);
       }
       pthread_mutex_unlock (&priv->res_lock);
     }
@@ -1452,7 +1564,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     /* Disable DW scale to get correct visible dimension for scaling */
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
-          &priv->hdr, priv->is_2k_only, priv->fr, true)) {
+          priv->is_2k_only, priv->fr, true)) {
       GST_ERROR("v4l_dec_config failed");
       priv->internal_err = TRUE;
       GST_OBJECT_UNLOCK (sink);
@@ -1471,6 +1583,14 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     priv->visible_w = selection.r.width;
     priv->visible_h = selection.r.height;
     GST_DEBUG ("visible %dx%d",  priv->visible_w, priv->visible_h);
+
+    GST_OBJECT_UNLOCK (sink);
+    GST_WARNING_OBJECT (sink, "emit video change signal");
+    g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_VIDEO_CHANGE], 0, 2, NULL);
+    GST_WARNING_OBJECT (sink, "emit video change signal done");
+    GST_OBJECT_LOCK (sink);
+    if (priv->fd < 0)
+      goto exit;
 
     memset(&cropcap, 0, sizeof(cropcap));
     cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
@@ -1492,7 +1612,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     /* Enable DW scale for correct linear buffer size */
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
-          &priv->hdr, priv->is_2k_only, priv->fr, false)) {
+          priv->is_2k_only, priv->fr, false)) {
       GST_ERROR("v4l_dec_config failed");
       priv->internal_err = TRUE;
       GST_OBJECT_UNLOCK (sink);
@@ -1527,6 +1647,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     priv->cb_alloc_num += priv->cb_num;
     priv->capture_port_config = TRUE;
     pthread_mutex_unlock (&priv->res_lock);
+    g_atomic_int_add (&priv->buf_dec_num, priv->cb_num);
 
     rc= ioctl (priv->fd, VIDIOC_STREAMON, &type);
     if ( rc < 0 )
@@ -1545,6 +1666,79 @@ static bool handle_v4l_event (GstAmlVsink *sink)
 exit:
   GST_OBJECT_UNLOCK (sink);
   return false;
+}
+
+static gpointer dqueue_output_buffer_thread(gpointer data)
+{
+  gint rc = -1;
+  gint index= -1;
+  struct v4l2_buffer buf;
+  struct v4l2_plane plane;
+  GstAmlVsink * sink = data;
+  GstAmlVsinkPrivate *priv = sink->priv;
+
+  prctl (PR_SET_NAME, "aml_v_dqoutput");
+  GST_INFO_OBJECT (sink, "enter");
+
+  while (!priv->quitdqOutputBufferThread) {
+    struct pollfd pfd = {
+      /* default blocking capture */
+      .events = POLLOUT | POLLWRNORM,
+      .fd = priv->fd,
+      .revents= 0,
+    };
+
+  for (;;) {
+    int ret;
+    ret = poll (&pfd, 1, 10);
+    if (ret > 0)
+      break;
+    if (priv->quitdqOutputBufferThread)
+      break;
+  }
+
+    /* only handle output port */
+    if ((pfd.revents & (POLLOUT|POLLWRNORM)) == 0) {
+      usleep(1000);
+      continue;
+    }
+
+    memset (&buf, 0, sizeof(buf));
+    buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+    buf.memory = priv->output_mode;
+    buf.length = 1;
+    buf.m.planes = &plane;
+    GST_OBJECT_LOCK (sink);
+    rc = ioctl (priv->fd, VIDIOC_DQBUF, &buf);
+    if (!rc) {
+      if (priv->ob) {
+        struct output_buffer *ob;
+
+        index = buf.index;
+        ob = priv->ob[index];
+        ob->plane = plane;
+        ob->buf = buf;
+        ob->queued = false;
+        if (ob->gstbuf) {
+          gst_buffer_unref (ob->gstbuf);
+          ob->gstbuf = NULL;
+          priv->ob_unref_num++;
+        }
+        g_mutex_lock(&priv->output_buffer_lock);
+        priv->ob_available_num++;
+        g_mutex_unlock(&priv->output_buffer_lock);
+      } else {
+        GST_WARNING_OBJECT (sink, "priv->ob is NULL");
+      }
+    }
+    GST_OBJECT_UNLOCK (sink);
+
+    g_mutex_lock(&priv->output_buffer_lock);
+    if (priv->ob_available_num > 0) {
+      g_cond_signal (&priv->output_buffer_available);
+    }
+    g_mutex_unlock(&priv->output_buffer_lock);
+  }
 }
 
 static struct capture_buffer* dqueue_capture_buffer(GstAmlVsink * sink)
@@ -1607,11 +1801,14 @@ gboolean detect_audio_sync(GstAmlVsink * sink)
 
           if (name && !strcmp(name, "GstAmlHalAsink")) {
             GstClock* amlclock= gst_aml_hal_asink_get_clock (element);
-
+            if (amlclock) {
             found = TRUE;
             priv->sessionId = gst_aml_clock_get_session_id (amlclock);
             GST_INFO ("detected audio sink %s", name);
             gst_object_unref (amlclock);
+            } else {
+              GST_WARNING ("no amlclock found");
+            }
             g_value_reset (&val);
             break;
           }
@@ -1702,8 +1899,10 @@ static gpointer video_decode_thread(gpointer data)
       continue;
     }
 
-    if (priv->eos)
+    if (priv->eos) {
+      usleep(1000);
       continue;
+    }
 
     cb = dqueue_capture_buffer (sink);
     if (!cb) {
@@ -1718,6 +1917,8 @@ static gpointer video_decode_thread(gpointer data)
       continue;
     }
 
+    g_atomic_int_add (&priv->buf_dec_num, -1);
+
     frame_ts = GST_TIMEVAL_TO_TIME(cb->buf.timestamp);
     if (frame_ts < priv->segment.start ||
         (priv->start_pts != GST_CLOCK_TIME_NONE && frame_ts < priv->start_pts)) {
@@ -1725,6 +1926,7 @@ static gpointer video_decode_thread(gpointer data)
           frame_ts, priv->segment.start, priv->start_pts);
       pthread_mutex_lock (&priv->res_lock);
       v4l_queue_capture_buffer (priv->fd, cb);
+      g_atomic_int_inc (&priv->buf_dec_num);
       pthread_mutex_unlock (&priv->res_lock);
       continue;
     }
@@ -1742,12 +1944,14 @@ static gpointer video_decode_thread(gpointer data)
       GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld", frame_ts);
       g_signal_emit (G_OBJECT (sink), g_signals[SIGNAL_FIRSTFRAME], 0, 2, NULL);
       GST_WARNING_OBJECT (sink, "emit first frame signal ts %lld done", frame_ts);
+
+      priv->start_pts = GST_CLOCK_TIME_NONE;
     }
 
     priv->out_frame_cnt++;
 
     if (priv->fr)
-      cb->drm_frame->duration = 90000/priv->fr;
+      cb->drm_frame->duration = 90000 * 100/priv->fr;
     else
       cb->drm_frame->duration = 0;
 
@@ -1761,6 +1965,7 @@ static gpointer video_decode_thread(gpointer data)
       src_win.y = priv->visible_dw_h * priv->source_window.y;
       src_win.w = priv->visible_dw_w * priv->source_window.w;
       src_win.h = priv->visible_dw_h * priv->source_window.h;
+
     } else {
       src_win.x = 0;
       src_win.y = 0;
@@ -1770,10 +1975,12 @@ static gpointer video_decode_thread(gpointer data)
 
     if (priv->render) {
       rc = display_engine_show (priv->render, cb->drm_frame, &src_win);
-      if (rc)
+      if (rc) {
         GST_WARNING_OBJECT (sink, "show %d error %d", cb->id, rc);
-      else
+      } else {
         GST_LOG_OBJECT (sink, "cb index %d to display", cb->id);
+        g_atomic_int_inc (&priv->buf_dis_num);
+      }
     }
     GST_OBJECT_UNLOCK (sink);
   }
@@ -1806,10 +2013,20 @@ static int start_video_thread (GstAmlVsink * sink)
   priv->rendered_frame_num = 0;
 
   priv->quitVideoOutputThread = FALSE;
+  priv->quitdqOutputBufferThread = FALSE;
   if (!priv->videoOutputThread) {
     GST_DEBUG_OBJECT (sink, "starting video thread");
     priv->videoOutputThread = g_thread_new ("video output thread", video_decode_thread, sink);
     if (!priv->videoOutputThread) {
+      GST_ERROR_OBJECT (sink, "fail to create thread");
+      return -1;
+    }
+  }
+
+  if (!priv->dqOutputBufferThread) {
+    GST_DEBUG_OBJECT (sink, "starting dq_output thread");
+    priv->dqOutputBufferThread = g_thread_new ("dq_output thread", dqueue_output_buffer_thread, sink);
+    if (!priv->dqOutputBufferThread) {
       GST_ERROR_OBJECT (sink, "fail to create thread");
       return -1;
     }
@@ -1821,46 +2038,21 @@ static int start_video_thread (GstAmlVsink * sink)
 
 static int get_output_buffer(GstAmlVsink * sink)
 {
+  gint i = 0;
+  gint index= -1;
   GstAmlVsinkPrivate *priv = sink->priv;
-  int index= -1;
-  int i;
+
+  g_mutex_lock(&priv->output_buffer_lock);
+  while (priv->ob_available_num == 0
+      && FALSE == priv->quitdqOutputBufferThread) {
+    g_cond_wait (&priv->output_buffer_available, &priv->output_buffer_lock);
+  }
+  g_mutex_unlock(&priv->output_buffer_lock);
 
   for (i= 0; i < priv->ob_num; ++i) {
     if (!priv->ob[i]->queued) {
       index= i;
       break;
-    }
-  }
-
-  if (index < 0) {
-    int rc;
-    struct v4l2_buffer buf;
-    struct v4l2_plane plane;
-
-    memset (&buf, 0, sizeof(buf));
-    buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    buf.memory = priv->output_mode;
-    buf.length = 1;
-    buf.m.planes = &plane;
-    rc = ioctl (priv->fd, VIDIOC_DQBUF, &buf);
-    if (!rc) {
-      GST_OBJECT_LOCK (sink);
-      if (priv->ob) {
-        struct output_buffer *ob;
-
-        index = buf.index;
-        ob = priv->ob[index];
-        ob->plane = plane;
-        ob->buf = buf;
-        ob->queued = false;
-        if (ob->gstbuf) {
-          gst_buffer_unref (ob->gstbuf);
-          ob->gstbuf = NULL;
-          priv->ob_unref_num++;
-        }
-      } else
-        index= -1;
-      GST_OBJECT_UNLOCK (sink);
     }
   }
   return index;
@@ -1901,7 +2093,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
      * Restrict apply that dw 16 can not be changed to other mode
      * in the run time, but dw 0/1/2/4 can be changed in runtime */
     if (v4l_dec_dw_config (priv->fd, priv->output_format,
-              priv->dw_mode,priv->low_latency, priv->is_2k_only, priv->fr)) {
+              priv->dw_mode,priv->low_latency, priv->is_2k_only, priv->fr, &priv->hdr)) {
       GST_ERROR("v4l_dec_dw_config failed");
       ret = GST_FLOW_ERROR;
       goto unlock_exit;
@@ -1921,8 +2113,11 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       ret = GST_FLOW_ERROR;
       goto unlock_exit;
     }
-    GST_OBJECT_UNLOCK (sink);
+    g_mutex_lock(&priv->output_buffer_lock);
+    priv->ob_available_num = priv->ob_num;
+    g_mutex_unlock(&priv->output_buffer_lock);
     priv->output_port_config = TRUE;
+    GST_OBJECT_UNLOCK (sink);
   }
 
   if (GST_BUFFER_PTS_IS_VALID(buf)) {
@@ -1990,9 +2185,18 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       GST_ERROR ("queuing output buffer failed: rc %d errno %d", rc, errno );
       goto unlock_exit;
     }
+    g_mutex_lock(&priv->output_buffer_lock);
+    priv->ob_available_num--;
+    g_mutex_unlock(&priv->output_buffer_lock);
     ob->queued = TRUE;
     ob->gstbuf = gst_buffer_ref (buf);
     priv->ob_ref_num++;
+
+    if ((priv->ob_ref_num % 30) == 0) {
+      GST_DEBUG_OBJECT (sink, "buf in dec: %d dis: %d",
+          g_atomic_int_get (&priv->buf_dec_num),
+          g_atomic_int_get (&priv->buf_dis_num));
+    }
   } else if (priv->output_mode == V4L2_MEMORY_MMAP) {
     GstMapInfo map;
     guint8 * inData;
@@ -2006,6 +2210,7 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
 
       if ( priv->flushing_) {
         GST_WARNING_OBJECT (sink, "drop frame in flushing");
+        gst_buffer_unmap (buf, &map);
         goto unlock_exit;
       }
 
@@ -2035,9 +2240,13 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
       rc = ioctl (priv->fd, VIDIOC_QBUF, &ob->buf);
       if (rc) {
         GST_ERROR("queuing output buffer failed: rc %d errno %d", rc, errno);
+        gst_buffer_unmap (buf, &map);
         goto unlock_exit;
       }
       ob->queued = true;
+      g_mutex_lock(&priv->output_buffer_lock);
+      priv->ob_available_num--;
+      g_mutex_unlock(&priv->output_buffer_lock);
       if (priv->in_frame_cnt - priv->out_frame_cnt < 2) {
           GST_INFO_OBJECT(sink, "queue ob %d len %d ts %lld in %d out %d",
               ob->buf.index, copied, GST_BUFFER_PTS(buf),
@@ -2105,7 +2314,7 @@ gst_aml_vsink_render (GstAmlVsink * sink, GstBuffer * buf)
   duration= GST_BUFFER_DURATION(buf);
   if (!GST_CLOCK_TIME_IS_VALID(duration)) {
     if (priv->fr != 0) {
-      duration= GST_SECOND / priv->fr;
+      duration= GST_SECOND * 100 / priv->fr;
       GST_BUFFER_DURATION(buf)= duration;
     }
   }
@@ -2224,6 +2433,12 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
   GstAmlVsinkPrivate *priv = sink->priv;
 
   priv->quitVideoOutputThread = TRUE;
+  priv->quitdqOutputBufferThread = TRUE;
+
+  /* signal output_buffer_available in case wait in get_output_buffer*/
+  g_mutex_lock(&priv->output_buffer_lock);
+  g_cond_signal (&priv->output_buffer_available);
+  g_mutex_unlock(&priv->output_buffer_lock);
 
   /* stop output port */
   type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
@@ -2235,6 +2450,9 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
   unref_num = recycle_output_port_buffer (priv->fd, priv->ob, priv->ob_num);
   priv->ob_unref_num += unref_num;
   priv->ob_num = 0;
+  g_mutex_lock(&priv->output_buffer_lock);
+  priv->ob_available_num = 0;
+  g_mutex_unlock(&priv->output_buffer_lock);
   priv->ob = NULL;
 
   /* stop capture port */
@@ -2251,6 +2469,13 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
     priv->videoOutputThread = NULL;
   }
 
+  if (priv->dqOutputBufferThread) {
+    GST_OBJECT_UNLOCK (sink);
+    g_thread_join (priv->dqOutputBufferThread);
+    GST_OBJECT_LOCK (sink);
+    priv->dqOutputBufferThread = NULL;
+  }
+
   pthread_mutex_lock (&priv->res_lock);
   if (priv->capture_port_config) {
     gint rel_num = recycle_capture_port_buffer (priv->fd,
@@ -2259,6 +2484,7 @@ static void reset_decoder(GstAmlVsink *sink, bool hard)
     priv->capture_port_config = FALSE;
     priv->cb_num = 0;
     priv->cb = NULL;
+    g_atomic_int_add (&priv->buf_dec_num, -rel_num);
   }
   pthread_mutex_unlock (&priv->res_lock);
 
@@ -2416,13 +2642,14 @@ static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed,
   else
     priv->rendered_frame_num++;
 
+  g_atomic_int_add (&priv->buf_dis_num, -1);
   pthread_mutex_lock (&priv->res_lock);
 
   if (recycled)
     GST_DEBUG ("recycle index %d", frame->buf.index);
 
   if (frame->free_on_recycle) {
-    if (frame->drm_frame->destroy(frame->drm_frame)) {
+    if (frame->drm_frame && frame->drm_frame->destroy(frame->drm_frame)) {
       GST_ERROR("free index %d fail", frame->buf.index);
      } else {
       GST_DEBUG ("free index %d", frame->buf.index);
@@ -2444,9 +2671,13 @@ static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed,
   }
 
   if (displayed) {
+    uint32_t position_correction;
     frame_ts = GST_TIMEVAL_TO_TIME(frame->buf.timestamp);
     priv->position = priv->segment.start + (frame_ts - priv->first_ts);
-    GST_LOG ("frame %lld position %lld", frame_ts, priv->position);
+    display_get_position_correction(priv->render, &position_correction);
+    // PAL call query position every 20ms, so position add extra 20ms
+    priv->position += (gint64) position_correction * 1000000 / 90 + 20000000;
+    GST_LOG ("frame %lld position %lld, position_correction %u", frame_ts, priv->position, position_correction);
   }
 
   ret = v4l_queue_capture_buffer(priv->fd, frame);
@@ -2454,6 +2685,7 @@ static int capture_buffer_recycle(void* priv_data, void* handle, bool displayed,
     GST_ERROR ("queue cb fail %d", frame->id);
   } else {
     GST_LOG ("queue cb index %d", frame->id);
+    g_atomic_int_inc (&priv->buf_dec_num);
   }
 
 exit:
