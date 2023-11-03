@@ -565,8 +565,29 @@ static int config_margin_buffer_number (uint32_t fmt, bool only_2k, float frame_
   return num;
 }
 
+
+static v4l_dec_ext_ctl(int fd, struct aml_dec_params *p)
+{
+  int rc;
+
+  struct v4l2_ext_control control;
+  struct v4l2_ext_controls ctrls;
+  memset(&ctrls, 0, sizeof(ctrls));
+  memset(&control, 0, sizeof(control));
+  control.id = AML_V4L2_DEC_PARMS_CONFIG;
+  control.ptr = p;
+  control.size = sizeof(struct aml_dec_params);
+  ctrls.count = 1;
+  ctrls.controls = &control;
+  rc= ioctl (fd, VIDIOC_S_EXT_CTRLS, &ctrls );
+  if (rc != 0)
+    GST_ERROR("VIDIOC_S_EXT_CTRLS failed for aml driver raw_data: %d", rc);
+
+  return rc;
+}
+
 int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,bool low_latency,
-      bool only_2k, int frame_rate, struct hdr_meta *hdr)
+      bool only_2k, int frame_rate, struct hdr_meta *hdr, bool ext_ctrls)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -716,15 +737,20 @@ int v4l_dec_dw_config(int fd, uint32_t fmt, uint32_t dw_mode,bool low_latency,
     }
   }
 
-  rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
-  if (rc)
-    GST_ERROR("VIDIOC_S_PARAM failed for aml driver raw_data: %d", rc);
+  if (ext_ctrls) {
+     rc = v4l_dec_ext_ctl(fd, decParm);
+  }
+  else {
+    rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
+    if (rc)
+      GST_ERROR("VIDIOC_S_PARAM failed for aml driver raw_data: %d", rc);
+  }
 
   return rc;
 }
 
 int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
-    bool is_2k_only, float frame_rate, bool disable_dw_scale)
+    bool is_2k_only, float frame_rate, bool disable_dw_scale, bool ext_ctrls)
 {
   int rc;
   struct v4l2_streamparm streamparm;
@@ -776,9 +802,14 @@ int v4l_dec_config(int fd, bool secure, uint32_t fmt, uint32_t dw_mode,
   if (!disable_dw_scale)
     decParm->cfg.metadata_config_flag |= (1 << 13);
 
-  rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
-  if (rc)
-    GST_ERROR("VIDIOC_S_PARAM failed for aml driver raw_data: %d", rc);
+  if (ext_ctrls) {
+     rc = v4l_dec_ext_ctl(fd, decParm);
+  }
+  else {
+    rc = ioctl (fd, VIDIOC_S_PARM, &streamparm );
+    if (rc)
+      GST_ERROR("VIDIOC_S_PARAM failed for aml driver raw_data: %d", rc);
+  }
 
   return rc;
 }

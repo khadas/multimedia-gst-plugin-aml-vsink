@@ -24,6 +24,7 @@
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
 #include <pthread.h>
+#include <sys/utsname.h>
 #include <aml_avsync.h>
 #include <aml_avsync_log.h>
 #include <gst/allocators/gstdmabuf.h>
@@ -178,6 +179,8 @@ struct _GstAmlVsinkPrivate
   /* status report */
   gint buf_dec_num;
   gint buf_dis_num;
+
+  gboolean use_ext_ctrls;
 };
 
 enum
@@ -1564,7 +1567,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     /* Disable DW scale to get correct visible dimension for scaling */
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
-          priv->is_2k_only, priv->fr, true)) {
+          priv->is_2k_only, priv->fr, true, priv->use_ext_ctrls)) {
       GST_ERROR("v4l_dec_config failed");
       priv->internal_err = TRUE;
       GST_OBJECT_UNLOCK (sink);
@@ -1612,7 +1615,7 @@ static bool handle_v4l_event (GstAmlVsink *sink)
     /* Enable DW scale for correct linear buffer size */
     if (v4l_dec_config(priv->fd, priv->secure,
           priv->output_format, priv->dw_mode,
-          priv->is_2k_only, priv->fr, false)) {
+          priv->is_2k_only, priv->fr, false, priv->use_ext_ctrls)) {
       GST_ERROR("v4l_dec_config failed");
       priv->internal_err = TRUE;
       GST_OBJECT_UNLOCK (sink);
@@ -2093,7 +2096,8 @@ static GstFlowReturn decode_buf (GstAmlVsink * sink, GstBuffer * buf)
      * Restrict apply that dw 16 can not be changed to other mode
      * in the run time, but dw 0/1/2/4 can be changed in runtime */
     if (v4l_dec_dw_config (priv->fd, priv->output_format,
-              priv->dw_mode,priv->low_latency, priv->is_2k_only, priv->fr, &priv->hdr)) {
+              priv->dw_mode,priv->low_latency, priv->is_2k_only,
+              priv->fr, &priv->hdr, priv->use_ext_ctrls)) {
       GST_ERROR("v4l_dec_dw_config failed");
       ret = GST_FLOW_ERROR;
       goto unlock_exit;
@@ -2549,6 +2553,9 @@ gst_aml_vsink_change_state (GstElement * element,
   switch (transition) {
     case GST_STATE_CHANGE_NULL_TO_READY:
     {
+      int major = 0, minor = 0;
+      struct utsname info;
+
       GST_DEBUG_OBJECT(sink, "null to ready");
       GST_OBJECT_LOCK (sink);
       /* render init */
@@ -2561,6 +2568,12 @@ gst_aml_vsink_change_state (GstElement * element,
       }
       display_engine_register_cb(capture_buffer_recycle);
       pause_pts_register_cb(pause_pts_arrived);
+
+      if (uname(&info) || sscanf(info.release, "%d.%d", &major, &minor) <= 0) {
+        GST_DEBUG("get linux version failed");
+      }
+      priv->use_ext_ctrls = ((major > 5) || (major == 5 && minor >= 15)) ? true: false;
+
       GST_OBJECT_UNLOCK (sink);
       break;
     }
